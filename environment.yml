@@ -1,0 +1,13 @@
+name: radar_tracking
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.9
+  - numpy=1.23
+  - matplotlib=3.7
+  - scipy=1.10
+  - filterpy=1.4
+  - pip=23.1
+  - pip:
+      - opencv-python==4.7.0.72  # 可选，用于未来扩展
