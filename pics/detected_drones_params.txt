@@ -1,0 +1,26 @@
+detector = SpatialDroneDetector(
+        processor=proc,
+        full_scan_file=full_scan_file,
+        update_files=update_files,
+
+        # 中值滤波核大小
+        median_size=3,
+        # 是否使用 Otsu 自动阈值，若为 False 则使用 thr_ratio
+        use_otsu=True,
+        thr_ratio=0.5,        # 手动阈值比例（0~1），仅当 use_otsu=False 时生效
+        thr_percentile=85,    # 百分位阈值，亦可根据需要调整
+
+        # 连通域过滤参数
+        min_area=2,
+        max_area=50,
+        max_width=10,
+        max_height=10,
+        # min_y 用于过滤地面大楼噪声（行坐标小于该值的连通域忽略）
+        min_y=70,
+
+        # 目标数（无人机数量）
+        n_targets=4,
+        # 峰值补齐参数
+        peak_min_distance=3,
+        peak_pad=1
+    )

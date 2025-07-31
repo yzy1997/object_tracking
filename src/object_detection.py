@@ -1,237 +1,154 @@
 # src/object_detection.py
-import os
+
 import numpy as np
-from collections import deque
-from sklearn.cluster import DBSCAN
-from sklearn.preprocessing import StandardScaler
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from scipy import ndimage
+from skimage.filters import threshold_otsu
+from skimage.measure import label, regionprops
 from skimage.feature import peak_local_max
 
-class EnhancedDroneDetector:
-    def __init__(self, processor, update_files, 
-                 y_threshold=40, eps=8, min_samples=1,
-                 temporal_window=5, speed_threshold=0.8,
-                 forbidden_zones=None, signal_adaptation=0.2):
-        """
-        改进后的无人机检测器初始化
-        """
-        self.processor = processor
+class SpatialDroneDetector:
+    def __init__(self,
+                 processor,
+                 full_scan_file,
+                 update_files,
+                 median_size=3,
+                 use_otsu=True,
+                 thr_ratio=0.5,
+                 thr_percentile=85,
+                 min_area=2,
+                 max_area=50,
+                 max_width=10,
+                 max_height=10,
+                 min_y=70,
+                 n_targets=4,
+                 peak_min_distance=3,
+                 peak_pad=1):
+        # 把所有传入参数都保存为实例属性
+        self.proc = processor
+        self.full_scan_file = full_scan_file
         self.update_files = update_files
-        self.y_threshold = y_threshold
-        self.eps = eps
-        self.min_samples = min_samples
-        self.temporal_window = temporal_window
-        self.speed_threshold = speed_threshold
-        self.forbidden_zones = forbidden_zones or []
-        self.signal_adaptation = signal_adaptation
-        self.history = deque(maxlen=temporal_window)
-        self.resolution = processor.resolution
-        self.dynamic_threshold = 100  # 初始信号阈值
+        self.median_size = median_size
+        self.use_otsu = use_otsu
+        self.thr_ratio = thr_ratio
+        self.thr_percentile = thr_percentile
+        self.min_area = min_area
+        self.max_area = max_area
+        self.max_width = max_width
+        self.max_height = max_height
+        self.min_y = min_y
+        self.n_targets = n_targets
+        self.peak_min_distance = peak_min_distance
+        self.peak_pad = peak_pad
 
-    def _is_in_forbidden_zone(self, x, y):
-        """优化后的禁止区域检查"""
-        for (x1, x2, y1, y2) in self.forbidden_zones:
-            if x1 <= x <= x2 and y1 <= y <= y2:
-                return True
-        return False
+        # 用于存放累积图
+        self.image = None
 
-    def _collect_changes(self):
-        """动态阈值信号采集"""
-        all_points = []
-        for file in self.update_files:
-            data = self.processor.read_radar_data(file)
-            if not data:
-                continue
-                
-            # 动态阈值调整
-            signal_strengths = [d for _, _, d in data]
-            if signal_strengths:
-                new_threshold = np.percentile(signal_strengths, 80)
-                self.dynamic_threshold = (1 - self.signal_adaptation) * self.dynamic_threshold \
-                                       + self.signal_adaptation * new_threshold
+    def build_accumulated_image(self):
+        """
+        1) 读取全扫描文件，写入零图
+        2) 读取增量帧文件，做最大值累积
+        3) 中值滤波去孤立噪点
+        """
+        # 要求 processor 已经读取过一次 full_scan_file，
+        # 并且有 radar_image 属性可以用于 np.zeros_like
+        img = np.zeros_like(self.proc.radar_image, dtype=np.float32)
 
-            valid_points = [
-                (x, y) for y, x, d in data 
-                if y >= self.y_threshold 
-                and d > self.dynamic_threshold * 0.7
-                and not self._is_in_forbidden_zone(x, y)
-            ]
-            all_points.extend(valid_points)
-        return np.array(all_points) if all_points else None
+        # 1) 全扫描
+        data_full = self.proc.read_radar_data(self.full_scan_file)
+        for y, x, d in data_full:
+            img[y, x] = d
 
-    def _calculate_movement(self, current_points):
-        """优化速度计算逻辑"""
-        moving_features = []
-        for pt in current_points:
-            speed = 0
-            if self.history:
-                displacements = []
-                for prev_points in self.history:
-                    if prev_points.size > 0:
-                        dists = np.linalg.norm(pt - prev_points, axis=1)
-                        min_dist = np.min(dists) if len(dists) > 0 else 0
-                        displacements.append(min_dist)
-                speed = np.percentile(displacements, 75) if displacements else 0
-            moving_features.append(np.append(pt, speed))
-        return np.array(moving_features)
+        # 2) 增量帧累积最大值
+        for f in self.update_files:
+            data_upd = self.proc.read_radar_data(f)
+            for y, x, d in data_upd:
+                if d > img[y, x]:
+                    img[y, x] = d
 
-    def _temporal_accumulation(self):
-        """时域信号累积检测"""
-        accum_map = np.zeros(self.resolution)
-        for frame_points in self.history:
-            for x, y in frame_points:
-                x_idx = min(int(x), self.resolution[0]-1)
-                y_idx = min(int(y), self.resolution[1]-1)
-                accum_map[x_idx, y_idx] += 1
-        
-        peaks = peak_local_max(
-            accum_map, 
-            min_distance=3,
-            threshold_abs=self.temporal_window * 0.6,
-            num_peaks=10
-        )
-        return peaks
+        # 3) 中值滤波
+        img = ndimage.median_filter(img, size=self.median_size)
 
-    def _merge_detections(self, boxes, peaks):
-        """融合聚类结果和时域结果"""
-        combined = []
-        # 转换时域峰值点为检测框
-        peak_boxes = [(max(0, p[1]-2), max(0, p[0]-2), 4, 4) for p in peaks]
-        
-        # 合并并去重
-        all_boxes = boxes + peak_boxes
-        for box in all_boxes:
-            if not self._is_duplicate(box, combined):
-                combined.append(box)
-        return combined
-
-    def _is_duplicate(self, new_box, existing_boxes, threshold=5):
-        """检测框去重逻辑"""
-        x_new, y_new, w_new, h_new = new_box
-        center_new = (x_new + w_new/2, y_new + h_new/2)
-        
-        for box in existing_boxes:
-            x, y, w, h = box
-            center = (x + w/2, y + h/2)
-            distance = np.linalg.norm(np.array(center_new) - np.array(center))
-            if distance < threshold:
-                return True
-        return False
+        self.image = img
+        return img
 
     def detect(self):
-        """改进后的检测流程"""
-        points = self._collect_changes()
-        if points is None or len(points) == 0:
+        """
+        基于累积图做阈值分割 + 开闭运算 + 连通域过滤，
+        最后不够 n_targets 时用峰值补齐。
+        返回列表：[(xmin, xmax, ymin, ymax), …]
+        """
+        if self.image is None:
+            self.build_accumulated_image()
+        img = self.image
+
+        # 找非零点用于阈值计算
+        nonzero = img[img > 0]
+        if nonzero.size == 0:
             return []
-            
-        self.history.append(points.copy())
-        enhanced_points = self._calculate_movement(points)
-        
-        # 动态参数调整
-        if enhanced_points.size > 0:
-            avg_movement = np.percentile(enhanced_points[:,2], 75)
-            dynamic_eps = self.eps * (1 + avg_movement/3)
+
+        # —— 阈值分割 —— 
+        if self.use_otsu:
+            thr = threshold_otsu(nonzero)
         else:
-            dynamic_eps = self.eps
-        
-        # 标准化聚类
-        scaler = StandardScaler()
-        scaled_points = scaler.fit_transform(enhanced_points[:,:2])
-        
-        clustering = DBSCAN(
-            eps=dynamic_eps*0.3,
-            min_samples=self.min_samples,
-            metric='euclidean'
-        ).fit(scaled_points)
-        
-        # 生成检测框
+            # 比如 85% 分位
+            thr = np.percentile(nonzero, self.thr_percentile)
+        bw = img > thr
+
+        # —— 形态学开闭运算 —— 
+        se = np.ones((3, 3), bool)
+        bw = ndimage.binary_opening(bw, structure=se)
+        bw = ndimage.binary_closing(bw, structure=se)
+
+        # —— 连通域标记 + 面积/宽高/位置双向过滤 —— 
+        lbl = label(bw, connectivity=2)
+        props = regionprops(lbl)
         boxes = []
-        for label in set(clustering.labels_):
-            if label == -1:
-                continue
-                
-            mask = clustering.labels_ == label
-            cluster = enhanced_points[mask]
-            
-            # 速度过滤
-            avg_speed = np.percentile(cluster[:,2], 75)
-            if avg_speed < self.speed_threshold:
-                continue
-                
-            # 生成检测框
-            x_min, y_min = cluster[:,:2].min(axis=0)
-            x_max, y_max = cluster[:,:2].max(axis=0)
-            
-            boxes.append((
-                max(0, x_min-2), 
-                max(0, y_min-2),
-                min(self.resolution[0], x_max - x_min + 4),
-                min(self.resolution[1], y_max - y_min + 4)
-            ))
-        
-        # 时域累积检测
-        temporal_peaks = self._temporal_accumulation()
-        combined_boxes = self._merge_detections(boxes, temporal_peaks)
-        
-        return combined_boxes
+        for reg in props:
+            area = reg.area
+            minr, minc, maxr, maxc = reg.bbox
+            h = maxr - minr
+            w = maxc - minc
 
-    def plot_result(self, boxes, output_path):
-        """增强可视化方法"""
-        plt.figure(figsize=(12, 12))
-        plt.imshow(self.processor.radar_image, cmap='hot', origin='lower')
-        plt.title("Enhanced Drone Detection Result")
-        plt.xlabel("X Coordinate")
-        plt.ylabel("Y Coordinate")
-        
-        # 绘制禁止区域
-        for (x1, x2, y1, y2) in self.forbidden_zones:
-            rect = Rectangle((x1, y1), x2-x1, y2-y1, 
-                           linewidth=1, edgecolor='white', 
-                           facecolor='gray', alpha=0.3)
-            plt.gca().add_patch(rect)
-            
-        # 绘制检测框
-        for (x, y, w, h) in boxes:
-            rect = Rectangle((x, y), w, h, 
-                           linewidth=2, edgecolor='lime', 
-                           facecolor='none', label='Detection')
-            plt.gca().add_patch(rect)
-        
-        # 绘制时域累积点
-        accum_map = self._temporal_accumulation()
-        if accum_map.size > 0:
-            plt.scatter(accum_map[:,1], accum_map[:,0], 
-                        s=80, c='cyan', marker='x',
-                        linewidths=2, label='Temporal Peaks')
-        
-        plt.legend(loc='upper right')
-        plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        plt.close()
+            # 1) 面积过滤
+            if area < self.min_area or area > self.max_area:
+                continue
+            # 2) 宽高过滤
+            if w > self.max_width or h > self.max_height:
+                continue
+            # 3) 地面／大楼噪声过滤
+            if minr < self.min_y:
+                continue
 
-    @staticmethod
-    def validate_detection(test_cases, processor_class, **detector_args):
-        """更新验证方法"""
-        results = []
-        for case in test_cases:
-            try:
-                processor = processor_class(resolution=(132,132), shift_pixel=4)
-                processor.process_files(case['file'], [])
-                
-                detector = EnhancedDroneDetector(processor, [], **detector_args)
-                boxes = detector.detect()
-                
-                result = {
-                    'file': os.path.basename(case['file']),
-                    'expected': case['expected'],
-                    'detected': len(boxes),
-                    'status': 'PASS' if len(boxes)==case['expected'] else 'FAIL'
-                }
-            except Exception as e:
-                result = {
-                    'file': os.path.basename(case['file']),
-                    'status': 'ERROR',
-                    'error': str(e)
-                }
-            results.append(result)
-        return results
+            # bbox 格式转换为 (xmin, xmax, ymin, ymax)
+            boxes.append((minc, maxc - 1, minr, maxr - 1))
+
+        # —— 峰值补齐 —— 
+        if len(boxes) < self.n_targets:
+            # peak_local_max 在新版 skimage 去掉了 indices 参数
+            peaks = peak_local_max(
+                img,
+                min_distance=self.peak_min_distance,
+                threshold_abs=thr,
+            )
+            # 兼容：如果返回的是布尔掩码，就用 argwhere
+            if peaks.dtype == bool:
+                coords = np.argwhere(peaks)
+            else:
+                coords = peaks  # 返回的就是 N×2 (row, col)
+
+            # 按强度降序排序
+            intensities = [img[y, x] for y, x in coords]
+            order = np.argsort(intensities)[::-1]
+            for idx in order:
+                if len(boxes) >= self.n_targets:
+                    break
+                y, x = coords[idx]
+                xmin = x - self.peak_pad
+                xmax = x + self.peak_pad
+                ymin = y - self.peak_pad
+                ymax = y + self.peak_pad
+                candidate = (xmin, xmax, ymin, ymax)
+                if candidate not in boxes:
+                    boxes.append(candidate)
+
+        return boxes
