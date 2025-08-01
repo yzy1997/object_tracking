@@ -2,8 +2,12 @@
 
 import numpy as np
 from scipy import ndimage
-from skimage.filters import threshold_otsu
-from skimage.measure import label, regionprops
+from scipy.cluster.hierarchy import fclusterdata
+try:
+    from skimage.filters import threshold_otsu
+except ImportError:
+    from skimage.filters.thresholding import threshold_otsu
+from skimage.morphology import white_tophat, disk
 from skimage.feature import peak_local_max
 
 class SpatialDroneDetector:
@@ -11,144 +15,140 @@ class SpatialDroneDetector:
                  processor,
                  full_scan_file,
                  update_files,
-                 median_size=3,
+                 # ----- 阈值 & 形态学 -----
                  use_otsu=True,
-                 thr_ratio=0.5,
-                 thr_percentile=85,
-                 min_area=2,
-                 max_area=50,
-                 max_width=10,
-                 max_height=10,
-                 min_y=70,
-                 n_targets=4,
-                 peak_min_distance=3,
-                 peak_pad=1):
-        # 把所有传入参数都保存为实例属性
-        self.proc = processor
+                 thr_percentile=80,
+                 median_size=3,
+                 # ----- 聚类 & 峰值fallback -----
+                 tophat_radius=5,
+                 cluster_dist=6,
+                 topk=4,
+                 # ----- 形状 & 位置过滤 -----
+                 min_area=2, max_area=100,
+                 max_width=15, max_height=15,
+                 min_y=60):
+        """
+        processor:          RadarImageProcessor 实例
+        full_scan_file:     静态全景文件，用于背景减法
+        update_files:       后续帧文件列表
+        use_otsu:           是否对 tophat 图用 Otsu
+        thr_percentile:     若不启用 Otsu，就用百分位阈值
+        median_size:        差分后做中值滤波去孤点
+        tophat_radius:      white_tophat 的半径
+        cluster_dist:       聚类时的距离阈值（像素）
+        topk:               最终想要的无人机数量
+        min_area...         连通域面积／框大小过滤
+        min_y:              仅保留 y0>=min_y 的框
+        """
+        self.processor      = processor
         self.full_scan_file = full_scan_file
-        self.update_files = update_files
-        self.median_size = median_size
-        self.use_otsu = use_otsu
-        self.thr_ratio = thr_ratio
-        self.thr_percentile = thr_percentile
-        self.min_area = min_area
-        self.max_area = max_area
-        self.max_width = max_width
-        self.max_height = max_height
-        self.min_y = min_y
-        self.n_targets = n_targets
-        self.peak_min_distance = peak_min_distance
-        self.peak_pad = peak_pad
+        self.update_files   = update_files
 
-        # 用于存放累积图
-        self.image = None
+        self.use_otsu       = use_otsu
+        self.thr_percentile = thr_percentile
+        self.median_size    = median_size
+
+        self.tophat_radius  = tophat_radius
+        self.cluster_dist   = cluster_dist
+        self.topk           = topk
+
+        self.min_area       = min_area
+        self.max_area       = max_area
+        self.max_width      = max_width
+        self.max_height     = max_height
+        self.min_y          = min_y
+
+        # 一次性读全景背景
+        self.processor.process_files(self.full_scan_file, [])
+        self.bg_img = self.processor.radar_image.astype(np.float32)
 
     def build_accumulated_image(self):
-        """
-        1) 读取全扫描文件，写入零图
-        2) 读取增量帧文件，做最大值累积
-        3) 中值滤波去孤立噪点
-        """
-        # 要求 processor 已经读取过一次 full_scan_file，
-        # 并且有 radar_image 属性可以用于 np.zeros_like
-        img = np.zeros_like(self.proc.radar_image, dtype=np.float32)
-
-        # 1) 全扫描
-        data_full = self.proc.read_radar_data(self.full_scan_file)
-        for y, x, d in data_full:
-            img[y, x] = d
-
-        # 2) 增量帧累积最大值
-        for f in self.update_files:
-            data_upd = self.proc.read_radar_data(f)
-            for y, x, d in data_upd:
-                if d > img[y, x]:
-                    img[y, x] = d
-
-        # 3) 中值滤波
-        img = ndimage.median_filter(img, size=self.median_size)
-
-        self.image = img
-        return img
+        self.processor.process_files(self.full_scan_file, self.update_files)
+        return self.processor.radar_image.astype(np.float32)
 
     def detect(self):
-        """
-        基于累积图做阈值分割 + 开闭运算 + 连通域过滤，
-        最后不够 n_targets 时用峰值补齐。
-        返回列表：[(xmin, xmax, ymin, ymax), …]
-        """
-        if self.image is None:
-            self.build_accumulated_image()
-        img = self.image
+        """返回 [(x0,x1,y0,y1), …] 的列表，数量动态自适应，至少 topk 个"""
+        # 1) 背景减法 + 非负
+        curr = self.build_accumulated_image()
+        diff = curr - self.bg_img
+        diff[diff < 0] = 0
 
-        # 找非零点用于阈值计算
-        nonzero = img[img > 0]
-        if nonzero.size == 0:
-            return []
+        # 2) 中值滤波
+        if self.median_size > 1:
+            diff = ndimage.median_filter(diff, size=self.median_size)
 
-        # —— 阈值分割 —— 
+        # 3) white-tophat 提取小亮点
+        selem = disk(self.tophat_radius)
+        topht = white_tophat(diff, footprint=selem)
+
+        # 4) 阈值分割
         if self.use_otsu:
-            thr = threshold_otsu(nonzero)
+            thr = threshold_otsu(topht)
         else:
-            # 比如 85% 分位
-            thr = np.percentile(nonzero, self.thr_percentile)
-        bw = img > thr
+            thr = np.percentile(topht, self.thr_percentile)
+        print(f"[DEBUG] tophat thr={thr:.1f}, tophat max={topht.max():.1f}")
+        mask = topht >= thr
 
-        # —— 形态学开闭运算 —— 
-        se = np.ones((3, 3), bool)
-        bw = ndimage.binary_opening(bw, structure=se)
-        bw = ndimage.binary_closing(bw, structure=se)
+        # 5) 形态学开闭，去掉毛刺
+        mask = ndimage.binary_opening(mask, structure=np.ones((3,3)))
+        mask = ndimage.binary_closing(mask, structure=np.ones((3,3)))
 
-        # —— 连通域标记 + 面积/宽高/位置双向过滤 —— 
-        lbl = label(bw, connectivity=2)
-        props = regionprops(lbl)
+        # 6) 找 mask 非零像素坐标
+        coords = np.column_stack(np.nonzero(mask))
         boxes = []
-        for reg in props:
-            area = reg.area
-            minr, minc, maxr, maxc = reg.bbox
-            h = maxr - minr
-            w = maxc - minc
 
-            # 1) 面积过滤
-            if area < self.min_area or area > self.max_area:
-                continue
-            # 2) 宽高过滤
-            if w > self.max_width or h > self.max_height:
-                continue
-            # 3) 地面／大楼噪声过滤
-            if minr < self.min_y:
-                continue
+        if coords.shape[0] > 0:
+            # 7) 层次聚类，把相距 <= cluster_dist 的点分到一簇
+            #    fclusterdata 每一行是一个样本 (y, x)
+            labels = fclusterdata(coords,
+                                  t=self.cluster_dist,
+                                  criterion='distance',
+                                  metric='euclidean')
+            # 8) 对每个簇求 bbox 并做面积／宽高／高度过滤
+            for lab in np.unique(labels):
+                pts = coords[labels == lab]
+                ys, xs = pts[:,0], pts[:,1]
+                y0, y1 = ys.min(), ys.max()+1
+                x0, x1 = xs.min(), xs.max()+1
+                w, h = x1-x0, y1-y0
+                area = w*h
+                if not (self.min_area <= area <= self.max_area):
+                    continue
+                if w > self.max_width or h > self.max_height:
+                    continue
+                if y0 < self.min_y:
+                    continue
+                boxes.append((x0, x1, y0, y1))
 
-            # bbox 格式转换为 (xmin, xmax, ymin, ymax)
-            boxes.append((minc, maxc - 1, minr, maxr - 1))
-
-        # —— 峰值补齐 —— 
-        if len(boxes) < self.n_targets:
-            # peak_local_max 在新版 skimage 去掉了 indices 参数
-            peaks = peak_local_max(
-                img,
-                min_distance=self.peak_min_distance,
-                threshold_abs=thr,
-            )
-            # 兼容：如果返回的是布尔掩码，就用 argwhere
-            if peaks.dtype == bool:
-                coords = np.argwhere(peaks)
-            else:
-                coords = peaks  # 返回的就是 N×2 (row, col)
-
-            # 按强度降序排序
-            intensities = [img[y, x] for y, x in coords]
-            order = np.argsort(intensities)[::-1]
-            for idx in order:
-                if len(boxes) >= self.n_targets:
-                    break
-                y, x = coords[idx]
-                xmin = x - self.peak_pad
-                xmax = x + self.peak_pad
-                ymin = y - self.peak_pad
-                ymax = y + self.peak_pad
-                candidate = (xmin, xmax, ymin, ymax)
-                if candidate not in boxes:
-                    boxes.append(candidate)
+        # 9) 如果聚类后还不到 topk，就退到峰值检测 + 同样聚类去重
+        if len(boxes) < self.topk:
+            # 9.1) 在 tophat 图上找一批峰值
+            peaks = peak_local_max(topht,
+                                   num_peaks=self.topk * 2,
+                                   footprint=np.ones((3,3)))
+            if peaks.size > 0:
+                # 把 peaks 点也当成 coords
+                labels2 = fclusterdata(peaks,
+                                       t=self.cluster_dist,
+                                       criterion='distance',
+                                       metric='euclidean')
+                cand = []
+                # 对每个簇，取簇内强度最高的那个点
+                for lab in np.unique(labels2):
+                    pts = peaks[labels2 == lab]
+                    # 计算哪一点在 tophat 上最亮
+                    intens = topht[pts[:,0], pts[:,1]]
+                    idx = np.argmax(intens)
+                    r, c = pts[idx]
+                    # 固定小框半宽 half=3
+                    half = 3
+                    x0 = max(c-half, 0)
+                    x1 = min(c+half, diff.shape[1])
+                    y0 = max(r-half, 0)
+                    y1 = min(r+half, diff.shape[0])
+                    cand.append((x0, x1, y0, y1))
+                # 按框心点强度排序并取前 topk
+                cand = sorted(cand, key=lambda b: - topht[(b[2]+b[3])//2, (b[0]+b[1])//2])
+                boxes = cand[:self.topk]
 
         return boxes
