@@ -122,26 +122,70 @@ class RadarImageProcessor:
         plt.close()
         return output_file
 
+def natural_sort_key(s):
+    import re
+    parts = re.split(r'(\d+)', s)
+    # 数字转换成 int，其它部分保持 str
+    return [int(p) if p.isdigit() else p for p in parts]
 
 # 使用示例
 if __name__ == "__main__":
-    # 文件路径配置
-    data_dir = r"D:\codes\object_tracking\data\600m"
-    full_scan_file = os.path.join(data_dir, "valid_framedata_0113_1.txt")
-    update_files = [
-        os.path.join(data_dir, "valid_framedata_0113_2.txt"),
-        os.path.join(data_dir, "valid_framedata_0113_3.txt"),
-        os.path.join(data_dir, "valid_framedata_0113_4.txt"),
-        os.path.join(data_dir, "valid_framedata_0113_5.txt"),
-        os.path.join(data_dir, "valid_framedata_0113_6.txt"),
-    ]
-    
-    shift_pixel = 4 # 假设每行偏移4个像素
-    processor = RadarImageProcessor(resolution=(132, 132))
+    import glob
+
+    # 1) 指定数据目录，修改成你自己的路径即可
+    data_dir = r"D:\codes\object_tracking\data\600m2"
+
+    # 2) 按文件名自然排序，匹配所有 valid_framedata_*.txt
+    pattern = os.path.join(data_dir, "valid_framedata_*.txt")
+    all_files = sorted(glob.glob(pattern), key=natural_sort_key)
+    if len(all_files) < 2:
+        print(f"❌ 在 {data_dir} 下未找到足够的 txt 文件，至少要两个：{pattern}")
+        exit(1)
+
+    # 3) 第一个文件做全景背景，后面的作为更新帧
+    full_scan_file = all_files[0]
+    update_files   = all_files[1:]
+
+    print("[INFO] 全景背景文件：", os.path.basename(full_scan_file))
+    print(f"[INFO] 共找到 {len(update_files)} 帧更新文件：")
+    for fp in update_files:
+        print("       ", os.path.basename(fp))
+
+    # 4) 创建处理器并处理
+    processor = RadarImageProcessor(shift_pixel=4)
     processor.process_files(full_scan_file, update_files)
-    
-    # 显示交互图像
+
+    # 5) 显示交互式图像
     processor.show_interactive_image(cmap='hot')
-    
-    # 保存校正后的图像
+
+    # 6) 保存校正后结果到 data_dir 下
     processor.save_image(output_path=data_dir)
+
+
+# if __name__ == "__main__":
+#     import os, glob
+
+#     # 脚本文件所在目录
+#     script_dir = os.path.dirname(os.path.abspath(__file__))
+#     # 假设项目结构是 /your_project/src/pixel_shifting_correction.py
+#     # 那么项目根目录就是再上一级
+#     project_root = os.path.dirname(script_dir)
+
+#     # data 文件夹在项目根下的 data/600m2
+#     data_folder = os.path.join(project_root, "data", "600m2")
+
+#     print("当前工作目录（cwd）：", os.getcwd())
+#     print("脚本绝对路径：", os.path.abspath(__file__))
+#     print("推断的项目根目录：", project_root)
+#     print("最终拼成的 data_folder：", data_folder)
+#     print()
+
+#     # 用 glob 去列所有 txt
+#     pattern = os.path.join(data_folder, "*.txt")
+#     txts = sorted(glob.glob(pattern))
+#     if not txts:
+#         print(">>> 没有找到任何 txt 文件！请检查 data_folder 路径和文件名后缀 <<<")
+#     else:
+#         print(f"按文件名排序后，{data_folder} 下所有 txt：")
+#         for t in txts:
+#             print("   ", os.path.basename(t))

@@ -97,58 +97,63 @@ class SpatialDroneDetector:
         coords = np.column_stack(np.nonzero(mask))
         boxes = []
 
+        # 7) 如果 coords 里有点，则做层次聚类
         if coords.shape[0] > 0:
-            # 7) 层次聚类，把相距 <= cluster_dist 的点分到一簇
-            #    fclusterdata 每一行是一个样本 (y, x)
-            labels = fclusterdata(coords,
-                                  t=self.cluster_dist,
-                                  criterion='distance',
-                                  metric='euclidean')
-            # 8) 对每个簇求 bbox 并做面积／宽高／高度过滤
-            for lab in np.unique(labels):
-                pts = coords[labels == lab]
-                ys, xs = pts[:,0], pts[:,1]
-                y0, y1 = ys.min(), ys.max()+1
-                x0, x1 = xs.min(), xs.max()+1
-                w, h = x1-x0, y1-y0
-                area = w*h
-                if not (self.min_area <= area <= self.max_area):
-                    continue
-                if w > self.max_width or h > self.max_height:
-                    continue
-                if y0 < self.min_y:
-                    continue
-                boxes.append((x0, x1, y0, y1))
+            try:
+                labels = fclusterdata(coords,
+                                      t=self.cluster_dist,
+                                      criterion='distance',
+                                      metric='euclidean')
+                # 8) 对每个簇求 bbox 并做面积／宽高／高度过滤
+                for lab in np.unique(labels):
+                    pts = coords[labels == lab]
+                    ys, xs = pts[:,0], pts[:,1]
+                    y0, y1 = ys.min(), ys.max()+1
+                    x0, x1 = xs.min(), xs.max()+1
+                    w, h = x1-x0, y1-y0
+                    area = w*h
+                    if not (self.min_area <= area <= self.max_area):
+                        continue
+                    if w > self.max_width or h > self.max_height:
+                        continue
+                    if y0 < self.min_y:
+                        continue
+                    boxes.append((x0, x1, y0, y1))
+            except ValueError:
+                # empty distance matrix 或其他异常，跳过本次聚类
+                boxes = []
 
         # 9) 如果聚类后还不到 topk，就退到峰值检测 + 同样聚类去重
         if len(boxes) < self.topk:
-            # 9.1) 在 tophat 图上找一批峰值
             peaks = peak_local_max(topht,
                                    num_peaks=self.topk * 2,
                                    footprint=np.ones((3,3)))
+            # 再次 guard：没有检测到任何峰值就直接返回当前 boxes（可能为空）
             if peaks.size > 0:
-                # 把 peaks 点也当成 coords
-                labels2 = fclusterdata(peaks,
-                                       t=self.cluster_dist,
-                                       criterion='distance',
-                                       metric='euclidean')
-                cand = []
-                # 对每个簇，取簇内强度最高的那个点
-                for lab in np.unique(labels2):
-                    pts = peaks[labels2 == lab]
-                    # 计算哪一点在 tophat 上最亮
-                    intens = topht[pts[:,0], pts[:,1]]
-                    idx = np.argmax(intens)
-                    r, c = pts[idx]
-                    # 固定小框半宽 half=3
-                    half = 3
-                    x0 = max(c-half, 0)
-                    x1 = min(c+half, diff.shape[1])
-                    y0 = max(r-half, 0)
-                    y1 = min(r+half, diff.shape[0])
-                    cand.append((x0, x1, y0, y1))
-                # 按框心点强度排序并取前 topk
-                cand = sorted(cand, key=lambda b: - topht[(b[2]+b[3])//2, (b[0]+b[1])//2])
-                boxes = cand[:self.topk]
+                try:
+                    labels2 = fclusterdata(peaks,
+                                           t=self.cluster_dist,
+                                           criterion='distance',
+                                           metric='euclidean')
+                    cand = []
+                    for lab in np.unique(labels2):
+                        pts = peaks[labels2 == lab]
+                        intens = topht[pts[:,0], pts[:,1]]
+                        idx = np.argmax(intens)
+                        r, c = pts[idx]
+                        half = 3
+                        x0 = max(c-half, 0)
+                        x1 = min(c+half, diff.shape[1])
+                        y0 = max(r-half, 0)
+                        y1 = min(r+half, diff.shape[0])
+                        cand.append((x0, x1, y0, y1))
+                    # 按框心点强度排序并取前 topk
+                    cand = sorted(cand,
+                                  key=lambda b: - topht[(b[2]+b[3])//2,
+                                                        (b[0]+b[1])//2])
+                    boxes = cand[:self.topk]
+                except ValueError:
+                    # 聚类出错就直接跳过
+                    pass
 
         return boxes
