@@ -9,7 +9,8 @@ import matplotlib.pyplot as plt
 from src.pixel_shifting_correction import RadarImageProcessor
 from src.object_detection      import SpatialDroneDetector
 # from src.UKF import KalmanPredictor
-from src.EKF import KalmanPredictor
+# from src.EKF import KalmanPredictor
+from src.CA_EKF import KalmanPredictor
 
 
 def natural_sort_key(s):
@@ -30,7 +31,7 @@ def main():
     # 初始化预处理器 + 滤波预测器
     proc      = RadarImageProcessor(shift_pixel=4)
     predictor = KalmanPredictor(
-        process_var=2.0,    # 过程噪声方差，可调
+        process_var=5.0,    # 过程噪声方差，可调
         meas_var=20.0       # 测量噪声方差，可调
     )
 
