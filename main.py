@@ -11,6 +11,9 @@ from src.object_detection      import SpatialDroneDetector
 # from src.UKF import KalmanPredictor
 # from src.EKF import KalmanPredictor
 from src.CA_EKF import KalmanPredictor
+# from src.CA_UKF import KalmanPredictorUKF as KalmanPredictor
+# from src.IMM_UKF import IMMUKFTracker as KalmanPredictor
+# from src.data_association import associate_detections_to_tracks
 
 
 def natural_sort_key(s):
@@ -31,8 +34,8 @@ def main():
     # 初始化预处理器 + 滤波预测器
     proc      = RadarImageProcessor(shift_pixel=4)
     predictor = KalmanPredictor(
-        process_var=5.0,    # 过程噪声方差，可调
-        meas_var=20.0       # 测量噪声方差，可调
+        process_var=2.0,    # 过程噪声方差，可调
+        meas_var=15.0       # 测量噪声方差，可调
     )
 
     actual_centers    = []   # 存储每帧的真实中心
