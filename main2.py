@@ -161,7 +161,7 @@ def main():
              fontsize=10, bbox=dict(facecolor='black', alpha=0.5))
     plt.legend(loc='lower right', fontsize=8)
     plt.axis('off')
-    plt.savefig(os.path.join(out_folder, "compare.png"),
+    plt.savefig(os.path.join(out_folder, "CA_EKF_compare.png"),
                 bbox_inches='tight', pad_inches=0)
     plt.close()
 
