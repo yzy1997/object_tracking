@@ -13,14 +13,20 @@ class KalmanPredictor:
         x0, x1, y0, y1 = box
         return np.array([[(x0 + x1) / 2.0], [(y0 + y1) / 2.0]], dtype=np.float32)
 
-    def __init__(self, process_var=1.0, meas_var=10.0):
+    def __init__(self, process_var=1.0, meas_var=10.0,
+                 min_movement=2.0, max_stationary_frames=3):
         self.dim_x, self.dim_z = 6, 2
-        self.process_var = process_var
-        self.R = np.eye(self.dim_z, dtype=np.float32) * meas_var
+        self.process_var = float(process_var)
+        self.R = np.eye(self.dim_z, dtype=np.float32) * float(meas_var)
         self.P = np.eye(self.dim_x, dtype=np.float32) * 500.0
         self.x = np.zeros((self.dim_x, 1), dtype=np.float32)
         self.inited = False
         self.last_frame = None
+
+        # 轨迹一致性检查
+        self.min_movement = float(min_movement)
+        self.stationary_count = 0
+        self.max_stationary_frames = int(max_stationary_frames)
 
     def fx(self, x, dt):
         px, vx, ax, py, vy, ay = x.flatten()
@@ -57,13 +63,15 @@ class KalmanPredictor:
         Q[0:3, 0:3] = Q_template
         Q[3:6, 3:6] = Q_template
         return Q * q
-    
+
     def init_filter(self, frame_idx, box):
         z = self.get_center(box)
-        self.x[0,0], self.x[3,0] = z[0,0], z[1,0] # 位置用观测初始化，速/加-速度为0
+        self.x[0,0], self.x[3,0] = z[0,0], z[1,0]  # 位置用观测初始化
+        self.x[1,0] = self.x[2,0] = self.x[4,0] = self.x[5,0] = 0.0
         self.last_frame = frame_idx
         self.inited = True
-        
+        self.stationary_count = 0
+
     def predict_one(self, dt):
         F = self.jac_F(dt)
         Q = self.get_Q(dt)
@@ -82,6 +90,19 @@ class KalmanPredictor:
         H = self.jac_H()
         z = self.get_center(box)
         z_pred = self.hx(self.x)
+
+        # —— 轨迹一致性：移动过小视作可能静态 —— #
+        movement = float(np.linalg.norm(z - z_pred))
+        if movement < self.min_movement:
+            self.stationary_count += 1
+            if self.stationary_count >= self.max_stationary_frames:
+                # 过多静止：重置到当前观测，避免被静态干扰拖偏
+                self.init_filter(frame_idx, box)
+                return np.array([self.x[0,0], self.x[3,0]], dtype=np.float32)
+        else:
+            self.stationary_count = 0
+
+        # 正常更新
         y = z - z_pred
         S = H @ self.P @ H.T + self.R
         K = self.P @ H.T @ np.linalg.inv(S)
@@ -89,10 +110,12 @@ class KalmanPredictor:
         I = np.eye(self.dim_x, dtype=np.float32)
         self.P = (I - K @ H) @ self.P
         self.last_frame = frame_idx
+
         return np.array([self.x[0,0], self.x[3,0]], dtype=np.float32)
 
     def predict(self, future_frames=1):
-        if not self.inited: return np.zeros((future_frames, 2), dtype=np.float32)
+        if not self.inited:
+            return np.zeros((future_frames, 2), dtype=np.float32)
         x0, P0, last = self.x.copy(), self.P.copy(), self.last_frame
         preds = []
         for _ in range(future_frames):

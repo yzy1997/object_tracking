@@ -1,0 +1,29 @@
+###########################################################
+#                   1600m 参数                            #
+###########################################################
+    Vmax = 15.0
+
+    # 4) 检测器（单实例 + 静态背景）
+    detector = SpatialDroneDetector(
+        processor      = proc,
+        full_scan_file = full_scan,
+        update_files   = [],
+        use_otsu       = False,
+        thr_percentile = 45,
+        thr_rel_floor  = 0.06,
+        median_size    = 1,
+        tophat_radius  = 1,
+        cluster_dist   = 3,
+        topk           = 8,
+        min_area       = 1,  max_area = 20,
+        max_width      = 10, max_height = 8,
+        min_y          = 90,
+        bg_mode        = 'static',
+        temporal_window= 1,
+        debug          = True
+    )
+
+    # 5) ROI & 自适应门控（仅用于内部选择，不再画出来）
+    ROI    = (5, 120, 80, 131)   # 覆盖上方黄点带（按需要微调）
+    BASE_GATE_R = 14.0
+    miss_count = 0
