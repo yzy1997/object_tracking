@@ -1,4 +1,5 @@
 # src/object_detection.py
+# -*- coding: utf-8 -*-
 
 import numpy as np
 from scipy import ndimage
@@ -10,108 +11,162 @@ except ImportError:
 from skimage.morphology import white_tophat, disk
 from skimage.feature import peak_local_max
 
+
 class SpatialDroneDetector:
     def __init__(self,
                  processor,
                  full_scan_file,
                  update_files,
                  # ----- 阈值 & 形态学 -----
-                 use_otsu=True,
-                 thr_percentile=80,
-                 median_size=3,
+                 use_otsu=False,
+                 thr_percentile=45,      # ↓ 放低分位
+                 median_size=1,
+                 tophat_radius=1,        # ↓ 更小结构元，保留微点
                  # ----- 聚类 & 峰值fallback -----
-                 tophat_radius=5,
-                 cluster_dist=6,
-                 topk=4,
+                 cluster_dist=3,
+                 topk=8,
                  # ----- 形状 & 位置过滤 -----
-                 min_area=2, max_area=100,
-                 max_width=15, max_height=15,
-                 min_y=60):
-        """
-        processor:          RadarImageProcessor 实例
-        full_scan_file:     静态全景文件，用于背景减法
-        update_files:       后续帧文件列表
-        use_otsu:           是否对 tophat 图用 Otsu
-        thr_percentile:     若不启用 Otsu，就用百分位阈值
-        median_size:        差分后做中值滤波去孤点
-        tophat_radius:      white_tophat 的半径
-        cluster_dist:       聚类时的距离阈值（像素）
-        topk:               最终想要的无人机数量
-        min_area...         连通域面积／框大小过滤
-        min_y:              仅保留 y0>=min_y 的框
-        """
+                 min_area=1, max_area=20,
+                 max_width=10, max_height=8,
+                 min_y=90,
+                 # ----- 背景/时间域 -----
+                 bg_mode='static',       # 本数据强烈建议 static
+                 bg_alpha=0.10,          # ema 时才用
+                 temporal_window=1,      # =1 等于关闭
+                 # ----- 其他 -----
+                 thr_rel_floor=0.06,     # ↓ 相对地板更宽松
+                 debug=True):
         self.processor      = processor
         self.full_scan_file = full_scan_file
         self.update_files   = update_files
 
         self.use_otsu       = use_otsu
-        self.thr_percentile = thr_percentile
-        self.median_size    = median_size
+        self.thr_percentile = float(thr_percentile)
+        self.median_size    = int(median_size)
+        self.tophat_radius  = int(tophat_radius)
 
-        self.tophat_radius  = tophat_radius
-        self.cluster_dist   = cluster_dist
-        self.topk           = topk
+        self.cluster_dist   = int(cluster_dist)
+        self.topk           = int(topk)
 
-        self.min_area       = min_area
-        self.max_area       = max_area
-        self.max_width      = max_width
-        self.max_height     = max_height
-        self.min_y          = min_y
+        self.min_area       = int(min_area)
+        self.max_area       = int(max_area)
+        self.max_width      = int(max_width)
+        self.max_height     = int(max_height)
+        self.min_y          = int(min_y)
 
-        # 一次性读全景背景
+        self.bg_mode        = bg_mode
+        self.bg_alpha       = float(bg_alpha)
+        self.temporal_window= int(temporal_window)
+        self.thr_rel_floor  = float(thr_rel_floor)
+        self.debug          = debug
+
+        # 以 full_scan 作为“静态背景”
         self.processor.process_files(self.full_scan_file, [])
-        self.bg_img = self.processor.radar_image.astype(np.float32)
+        self.bg_img = self.processor.radar_image.astype(np.float32).copy()
+
+        # 调试 / 缓存
+        self.recent_frames = []
+        self.temporal_std  = None
+        self.diff_img      = None
+        self.tophat_img    = None
+        self.mask_img      = None
 
     def build_accumulated_image(self):
         self.processor.process_files(self.full_scan_file, self.update_files)
         return self.processor.radar_image.astype(np.float32)
 
-    def detect(self):
-        """返回 [(x0,x1,y0,y1), …] 的列表，数量动态自适应，至少 topk 个"""
-        # 1) 背景减法 + 非负
-        curr = self.build_accumulated_image()
-        diff = curr - self.bg_img
-        diff[diff < 0] = 0
+    def _update_temporal_buffer(self, frame):
+        self.recent_frames.append(frame.copy())
+        if len(self.recent_frames) > self.temporal_window:
+            self.recent_frames.pop(0)
+        if len(self.recent_frames) >= 3:
+            stack = np.stack(self.recent_frames, axis=2)
+            self.temporal_std = np.std(stack, axis=2)
+        else:
+            self.temporal_std = None
 
-        # 2) 中值滤波
+    def detect(self):
+        """返回 [(x0,x1,y0,y1), …] 的列表"""
+        # 1) 当前帧（full_scan + 本帧增量）
+        curr = self.build_accumulated_image()
+
+        # 2) 时间窗（默认关闭）
+        self._update_temporal_buffer(curr)
+
+        # 3) 静态背景差分
+        diff = curr - self.bg_img
+        diff[diff < 0] = 0.0
+        if self.temporal_std is not None:
+            std = self.temporal_std
+            smax = np.percentile(std, 99)
+            if smax > 0:
+                w = np.clip(std / smax, 0.0, 1.0)
+                diff = diff * w
+        if self.debug:
+            self.diff_img = diff.copy()
+
+        # 4) 轻中值
         if self.median_size > 1:
             diff = ndimage.median_filter(diff, size=self.median_size)
 
-        # 3) white-tophat 提取小亮点
-        selem = disk(self.tophat_radius)
+        # 5) white-tophat（小结构元）
+        selem = disk(max(1, self.tophat_radius))
         topht = white_tophat(diff, footprint=selem)
+        if self.debug:
+            self.tophat_img = topht.copy()
 
-        # 4) 阈值分割
-        if self.use_otsu:
-            thr = threshold_otsu(topht)
+        tmax = float(topht.max())
+        if tmax <= 0:
+            if self.bg_mode == 'ema':
+                a = self.bg_alpha
+                self.bg_img = a * curr + (1 - a) * self.bg_img
+            self.mask_img = np.zeros_like(topht, dtype=bool)
+            if self.debug:
+                print("[DEBUG] tophat thr=N/A, tophat max=0.0, non-zero count=0")
+            return []
+
+        # 6) 阈值：仅非零分位 + 相对地板
+        nz = topht[topht > 0]
+        if nz.size >= 20:
+            if self.use_otsu:
+                try:
+                    thr_otsu = threshold_otsu(nz)
+                except Exception:
+                    thr_otsu = np.percentile(nz, self.thr_percentile)
+                thr_pctl = np.percentile(nz, self.thr_percentile)
+                thr = max(thr_otsu, thr_pctl)
+            else:
+                thr = np.percentile(nz, self.thr_percentile)
         else:
-            thr = np.percentile(topht, self.thr_percentile)
-        print(f"[DEBUG] tophat thr={thr:.1f}, tophat max={topht.max():.1f}")
+            thr = 0.0
+        thr = max(thr, self.thr_rel_floor * tmax)
+        if self.debug:
+            print(f"[DEBUG] tophat thr={thr:.1f}, tophat max={tmax:.1f}, non-zero count={int(nz.size)}")
+
         mask = topht >= thr
 
-        # 5) 形态学开闭，去掉毛刺
-        mask = ndimage.binary_opening(mask, structure=np.ones((3,3)))
-        mask = ndimage.binary_closing(mask, structure=np.ones((3,3)))
+        # 7) 形态学开闭 —— 对极小目标自动“关闭开闭”
+        #    若最小面积<=2 或最大宽高<=3，使用 1x1 结构元（等价于不做开闭）
+        struct_sz = 1 if (self.min_area <= 2 or (self.max_width <= 3 or self.max_height <= 3)) else 3
+        structure = np.ones((struct_sz, struct_sz), dtype=bool)
+        mask = ndimage.binary_opening(mask, structure=structure)
+        mask = ndimage.binary_closing(mask, structure=structure)
+        self.mask_img = mask.copy() if self.debug else None
 
-        # 6) 找 mask 非零像素坐标
+        # 8) 聚类 → bbox → 形状/高度过滤
         coords = np.column_stack(np.nonzero(mask))
         boxes = []
-
-        # 7) 如果 coords 里有点，则做层次聚类
         if coords.shape[0] > 0:
             try:
-                labels = fclusterdata(coords,
-                                      t=self.cluster_dist,
-                                      criterion='distance',
-                                      metric='euclidean')
-                # 8) 对每个簇求 bbox 并做面积／宽高／高度过滤
+                labels = fclusterdata(coords, t=self.cluster_dist,
+                                      criterion='distance', metric='euclidean')
                 for lab in np.unique(labels):
                     pts = coords[labels == lab]
-                    ys, xs = pts[:,0], pts[:,1]
-                    y0, y1 = ys.min(), ys.max()+1
-                    x0, x1 = xs.min(), xs.max()+1
-                    w, h = x1-x0, y1-y0
-                    area = w*h
+                    ys, xs = pts[:, 0], pts[:, 1]
+                    y0, y1 = ys.min(), ys.max() + 1
+                    x0, x1 = xs.min(), xs.max() + 1
+                    w, h = x1 - x0, y1 - y0
+                    area = w * h
                     if not (self.min_area <= area <= self.max_area):
                         continue
                     if w > self.max_width or h > self.max_height:
@@ -120,40 +175,46 @@ class SpatialDroneDetector:
                         continue
                     boxes.append((x0, x1, y0, y1))
             except ValueError:
-                # empty distance matrix 或其他异常，跳过本次聚类
                 boxes = []
 
-        # 9) 如果聚类后还不到 topk，就退到峰值检测 + 同样聚类去重
+        # 9) 峰值回退（给上层 ROI/门控挑选）
         if len(boxes) < self.topk:
-            peaks = peak_local_max(topht,
-                                   num_peaks=self.topk * 2,
-                                   footprint=np.ones((3,3)))
-            # 再次 guard：没有检测到任何峰值就直接返回当前 boxes（可能为空）
+            peaks = peak_local_max(topht, num_peaks=max(self.topk * 2, 10),
+                                   min_distance=1, footprint=np.ones((3, 3)))
             if peaks.size > 0:
                 try:
-                    labels2 = fclusterdata(peaks,
-                                           t=self.cluster_dist,
-                                           criterion='distance',
-                                           metric='euclidean')
+                    labels2 = fclusterdata(peaks, t=self.cluster_dist,
+                                           criterion='distance', metric='euclidean')
                     cand = []
                     for lab in np.unique(labels2):
                         pts = peaks[labels2 == lab]
-                        intens = topht[pts[:,0], pts[:,1]]
-                        idx = np.argmax(intens)
+                        intens = topht[pts[:, 0], pts[:, 1]]
+                        idx = int(np.argmax(intens))
                         r, c = pts[idx]
-                        half = 3
-                        x0 = max(c-half, 0)
-                        x1 = min(c+half, diff.shape[1])
-                        y0 = max(r-half, 0)
-                        y1 = min(r+half, diff.shape[0])
+                        half = 2
+                        x0 = max(c - half, 0); x1 = min(c + half, diff.shape[1] - 1) + 1
+                        y0 = max(r - half, 0); y1 = min(r + half, diff.shape[0] - 1) + 1
+                        w, h = x1 - x0, y1 - y0
+                        area = w * h
+                        if not (self.min_area <= area <= self.max_area):
+                            continue
+                        if w > self.max_width or h > self.max_height:
+                            continue
+                        if y0 < self.min_y:
+                            continue
                         cand.append((x0, x1, y0, y1))
-                    # 按框心点强度排序并取前 topk
-                    cand = sorted(cand,
-                                  key=lambda b: - topht[(b[2]+b[3])//2,
-                                                        (b[0]+b[1])//2])
-                    boxes = cand[:self.topk]
+                    if cand:
+                        def center_intensity(b):
+                            cy = (b[2] + b[3]) // 2; cx = (b[0] + b[1]) // 2
+                            return topht[cy, cx]
+                        cand = sorted(cand, key=lambda b: -center_intensity(b))
+                        boxes = (boxes + cand)[:self.topk]
                 except ValueError:
-                    # 聚类出错就直接跳过
                     pass
+
+        # static 模式不更新背景
+        if self.bg_mode == 'ema':
+            a = self.bg_alpha
+            self.bg_img = a * curr + (1 - a) * self.bg_img
 
         return boxes
