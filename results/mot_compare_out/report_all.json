@@ -1,0 +1,22 @@
+{
+  "run": {
+    "total_frames": 30,
+    "total_dets": 429,
+    "total_matches": 281,
+    "final_active_tracks": 12
+  },
+  "no_gt": {
+    "num_tracks_total": 13.0,
+    "top4_coverage_ratio": 0.34626865671641793,
+    "avg_track_len": 25.76923076923077,
+    "median_track_len": 28.0,
+    "avg_breaks_per_track": 0.0,
+    "median_breaks_per_track": 0.0,
+    "avg_pred_ratio": 0.14821805073794464,
+    "median_pred_ratio": 0.11538461538461539,
+    "avg_speed(px/frame)": 3.8945229603694034,
+    "avg_acc(px/frame^2)": 1.1157146592934926,
+    "avg_active_tracks_per_frame": 11.166666666666666,
+    "max_active_tracks_in_a_frame": 12.0
+  }
+}

@@ -55,8 +55,8 @@ def brightest_peak_box_in_roi(img, roi, half=2):
 
 
 def main():
-    data_folder = "data/1600"
-    out_folder  = "pics/1600"
+    data_folder = "D:\\codes\\object_tracking\\data\\out_uav_4_edge_to_edge_bidir\\txt"
+    out_folder  = "pics/out_uav_4_edge_to_edge_bidir"
     os.makedirs(out_folder, exist_ok=True)
 
     # 1) 文件列表
