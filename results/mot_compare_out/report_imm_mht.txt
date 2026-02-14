@@ -1,0 +1,20 @@
+=== Tracking report ===
+
+[Run stats]
+total_frames: 30
+final_tracks: 22
+association: IMM-MHT
+imm_models: 2
+use_mahalanobis: True
+
+[Top tracks by length]
+ tid=0, len=29
+ tid=2, len=29
+ tid=4, len=28
+ tid=5, len=28
+ tid=6, len=28
+ tid=7, len=28
+ tid=8, len=27
+ tid=9, len=27
+ tid=10, len=27
+ tid=11, len=26

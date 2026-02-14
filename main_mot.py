@@ -1,22 +1,28 @@
+
 # -*- coding: utf-8 -*-
 """
 一键运行：4 UAV 轨迹（Kalman + Hungarian），支持缺检补帧 & 交叉抗ID交换
-输入:
-  D:\codes\object_tracking\data\out_uav_4_edge_to_edge_bidir\txt\frame_*.txt
-输出:
-  D:\codes\object_tracking\results\mot_compare_out\
-    - mot_plot.png  (白底轨迹+方框；实线=检测更新，虚线=预测)
-    - tracks.txt    (frame tid x y w h state[det/pred])
-    - report.txt    (无GT情况下的质量指标 + (可选) 有GT的MOT指标)
-    - report_top4.txt / metrics_top4.json  (仅对绘图那4条“主轨迹”的一致评估)
-    - report_all.json (全量无GT指标摘要，便于程序对比)
 
-依赖:
-  numpy, matplotlib, scipy
+输入: D:\codes\object_tracking\data\out_uav_4_edge_to_edge_bidir\txt\frame_*.txt
+输出: D:\codes\object_tracking\results\mot_compare_out
+  - mot_plot.png (白底轨迹+方框；实线=检测更新，虚线=预测)
+  - tracks.txt (frame tid x y w h state[det/pred])
+  - report.txt (无GT情况下的质量指标 + (可选) 有GT的MOT指标)
+  - report_top4.txt / metrics_top4.json (仅对绘图那4条“主轨迹”的一致评估)
+  - report_all.json (全量无GT指标摘要，便于程序对比)
+
+依赖: numpy, matplotlib, scipy
 以及你的工程内：
   src/pixel_shifting_correction.py -> RadarImageProcessor
   src/object_detection.py -> SpatialDroneDetector
   src.eval_no_gt.py -> evaluate(tracks_txt, out_json, out_txt)
+
+GNN算法路径：
+  Detection ↓ Kalman Predict ↓ Cost Matrix ↓ Hungarian (唯一解) ↓ Update Tracks
+
+MHT算法路径：
+  Detection ↓ Kalman Predict ↓ Gate + Spatial Decomposition ↓ Multi-Hypothesis Generation
+  ↓ N-scan Pruning + Score Pruning ↓ Best Hypothesis → 输出
 """
 
 import os
@@ -29,11 +35,11 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
-
 from scipy.optimize import linear_sum_assignment
 
 from src.pixel_shifting_correction import RadarImageProcessor
 from src.object_detection import SpatialDroneDetector
+from src.mht_tracker import MHTTracker
 from src.eval_no_gt import evaluate as eval_no_gt_evaluate
 
 
@@ -43,21 +49,23 @@ from src.eval_no_gt import evaluate as eval_no_gt_evaluate
 INPUT_DIR = r"D:\codes\object_tracking\data\out_uav_4_edge_to_edge_bidir\txt"
 OUTPUT_DIR = r"D:\codes\object_tracking\results\mot_compare_out"
 
+
 # -----------------------------
 # 可选：GT 文件（没有就填 None）
 # -----------------------------
 GT_PATH: Optional[str] = None
 
 # GT 评估参数
-GT_MATCH_METRIC = "dist"     # "dist" or "iou"
-GT_DIST_THRESH = 10.0        # 像素距离阈值（用于点/中心距离匹配）
-GT_IOU_THRESH = 0.3          # IoU阈值（用于bbox匹配）
+GT_MATCH_METRIC = "dist"  # "dist" or "iou"
+GT_DIST_THRESH = 10.0     # 像素距离阈值（用于点/中心距离匹配）
+GT_IOU_THRESH = 0.3       # IoU阈值（用于bbox匹配）
 
 
 # -----------------------------
 # 图像尺寸
 # -----------------------------
 IMG_W, IMG_H = 132, 132
+
 
 # -----------------------------
 # 检测：窗口累积参数（关键）
@@ -69,14 +77,13 @@ SHIFT_PIXEL = 4
 DETECTOR_DEBUG = False
 DETECTOR_MIN_Y = 0
 
+
 # -----------------------------
 # 跟踪：Kalman + Hungarian 参数
 # -----------------------------
 DT = 1.0
-
 GATING_DISTANCE = 14.0
 COST_UNMATCHED = 1e6
-
 MAX_MISSED = 10
 MIN_HITS_TO_CONFIRM = 2
 MAX_TRACKS_KEEP = 12
@@ -87,13 +94,13 @@ MEASUREMENT_NOISE_POS = 6.0
 
 WH_SMOOTH = 0.7
 
+
 # -----------------------------
 # 可视化
 # -----------------------------
 NUM_DRONES_TO_SHOW = 4
 BBOX_ALPHA = 0.65
 BBOX_LINEWIDTH = 1.3
-
 PALETTE = ["#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd"]  # 蓝 绿 橙 紫
 
 
@@ -103,16 +110,20 @@ PALETTE = ["#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd"]  # 蓝 绿 橙 紫
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
+
 def natural_sort_key(s: str):
     parts = re.split(r"(\d+)", os.path.basename(s))
     return [int(p) if p.isdigit() else p for p in parts]
+
 
 def list_frame_files(dir_path: str) -> List[str]:
     files = glob.glob(os.path.join(dir_path, "frame_*.txt"))
     return sorted(files, key=natural_sort_key)
 
+
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
 
 def xyxy_to_xywh_list(boxes_xyxy) -> List[Tuple[float, float, float, float]]:
     dets = []
@@ -128,16 +139,17 @@ def xyxy_to_xywh_list(boxes_xyxy) -> List[Tuple[float, float, float, float]]:
         dets.append((x0f, y0f, w, h))
     return dets
 
+
 def bbox_center_xy(b):
     x, y, w, h = b
     return np.array([x + w / 2.0, y + h / 2.0], dtype=np.float32)
+
 
 def bbox_iou(a_xywh, b_xywh) -> float:
     ax, ay, aw, ah = a_xywh
     bx, by, bw, bh = b_xywh
     ax2, ay2 = ax + aw, ay + ah
     bx2, by2 = bx + bw, by + bh
-
     ix1, iy1 = max(ax, bx), max(ay, by)
     ix2, iy2 = min(ax2, bx2), min(ay2, by2)
     iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
@@ -156,17 +168,23 @@ class KalmanCV:
     状态: [cx, cy, vx, vy]
     观测: [cx, cy]
     """
+
     def __init__(self):
         self.x = np.zeros((4, 1), dtype=np.float32)
         self.P = np.eye(4, dtype=np.float32) * 500.0
 
-        self.F = np.array([[1, 0, DT, 0],
-                           [0, 1, 0, DT],
-                           [0, 0, 1,  0],
-                           [0, 0, 0,  1]], dtype=np.float32)
-
-        self.H = np.array([[1, 0, 0, 0],
-                           [0, 1, 0, 0]], dtype=np.float32)
+        self.F = np.array(
+            [[1, 0, DT, 0],
+             [0, 1, 0, DT],
+             [0, 0, 1, 0],
+             [0, 0, 0, 1]],
+            dtype=np.float32,
+        )
+        self.H = np.array(
+            [[1, 0, 0, 0],
+             [0, 1, 0, 0]],
+            dtype=np.float32,
+        )
 
         q_pos = PROCESS_NOISE_POS
         q_vel = PROCESS_NOISE_VEL
@@ -221,13 +239,12 @@ def run_detection_windowed(frame_files: List[str]) -> Dict[int, List[Tuple[float
     updates = frame_files[1:]  # 对应 frame 1..N
 
     processor = RadarImageProcessor(resolution=(IMG_W, IMG_H), shift_pixel=SHIFT_PIXEL)
-
     detector = SpatialDroneDetector(
         processor=processor,
         full_scan_file=full_scan,
         update_files=[],
         debug=DETECTOR_DEBUG,
-        min_y=DETECTOR_MIN_Y
+        min_y=DETECTOR_MIN_Y,
     )
 
     detection_data: Dict[int, List[Tuple[float, float, float, float]]] = {}
@@ -245,8 +262,10 @@ def run_detection_windowed(frame_files: List[str]) -> Dict[int, List[Tuple[float
         detection_data[frame_id] = xyxy_to_xywh_list(boxes_xyxy)
 
         if (frame_id % 50 == 0) or (frame_id < 5):
-            print(f"[detect] frame={frame_id:04d} window=[{start+1:04d}..{end:04d}] "
-                  f"files={len(window_updates)} dets={len(detection_data[frame_id])}")
+            print(
+                f"[detect] frame={frame_id:04d} window=[{start+1:04d}..{end:04d}] "
+                f"files={len(window_updates)} dets={len(detection_data[frame_id])}"
+            )
 
     return detection_data
 
@@ -259,14 +278,16 @@ def build_cost_matrix(tracks: List[Track], dets_xywh: List[Tuple[float, float, f
         return np.empty((len(tracks), len(dets_xywh)), dtype=np.float32)
 
     det_centers = np.stack([bbox_center_xy(d) for d in dets_xywh], axis=0)  # (M,2)
-
     cost = np.full((len(tracks), len(dets_xywh)), COST_UNMATCHED, dtype=np.float32)
+
     for i, tr in enumerate(tracks):
         pred = tr.kf.x[:2, 0].astype(np.float32)  # (2,)
         d = np.sqrt(((det_centers - pred[None, :]) ** 2).sum(axis=1))
         ok = d <= GATING_DISTANCE
         cost[i, ok] = d[ok]
+
     return cost
+
 
 def create_track(next_id: int, frame_id: int, det_xywh: Tuple[float, float, float, float]) -> Track:
     cx, cy = bbox_center_xy(det_xywh)
@@ -275,20 +296,27 @@ def create_track(next_id: int, frame_id: int, det_xywh: Tuple[float, float, floa
     kf = KalmanCV()
     kf.init_from_measurement(cx, cy, vx=0.0, vy=0.0)
 
-    tr = Track(track_id=next_id, kf=kf, w=w, h=h, hits=1, missed=0,
-               confirmed=False, last_update_frame=frame_id)
+    tr = Track(
+        track_id=next_id,
+        kf=kf,
+        w=w,
+        h=h,
+        hits=1,
+        missed=0,
+        confirmed=False,
+        last_update_frame=frame_id,
+    )
     return tr
 
-def track_step(tracks: List[Track],
-               dets_xywh: List[Tuple[float, float, float, float]],
-               frame_id: int,
-               next_id: int):
+
+def track_step(tracks: List[Track], dets_xywh: List[Tuple[float, float, float, float]], frame_id: int, next_id: int):
     for tr in tracks:
         tr.kf.predict()
         tr.missed += 1
         tr.total_predictions += 1
 
     cost = build_cost_matrix(tracks, dets_xywh)
+
     matched_t = set()
     matched_d = set()
     matches = []
@@ -315,6 +343,7 @@ def track_step(tracks: List[Track],
         tracks[r].missed = 0
         tracks[r].last_update_frame = frame_id
         tracks[r].total_updates += 1
+
         if (not tracks[r].confirmed) and tracks[r].hits >= MIN_HITS_TO_CONFIRM:
             tracks[r].confirmed = True
 
@@ -333,21 +362,76 @@ def track_step(tracks: List[Track],
 
     return tracks, next_id, matches
 
+
 def get_track_bbox_xywh(tr: Track) -> Tuple[float, float, float, float]:
     cx, cy = tr.kf.x[0, 0], tr.kf.x[1, 0]
     w, h = float(tr.w), float(tr.h)
+
     x = float(cx - w / 2.0)
     y = float(cy - h / 2.0)
+
     x = clamp(x, 0.0, IMG_W - 1.0)
     y = clamp(y, 0.0, IMG_H - 1.0)
     w = clamp(w, 1.0, IMG_W - x)
     h = clamp(h, 1.0, IMG_H - y)
+
     return (x, y, w, h)
+
+
+def run_tracking_mht(detection_data):
+    tracks = []
+    next_id = 0
+    frame_tracks = {}
+
+    mht = MHTTracker(
+        gating_distance=GATING_DISTANCE,
+        max_hypotheses=20,
+        n_scan=3,
+        max_missed=MAX_MISSED,
+    )
+
+    for frame_id in sorted(detection_data.keys()):
+        dets = detection_data[frame_id]
+
+        if frame_id == 0:
+            for det in dets:
+                tr = create_track(next_id, frame_id, det)
+                tracks.append(tr)
+                next_id += 1
+            mht.initialize(tracks)
+        else:
+            tracks, next_id = mht.step(
+                detections=dets,
+                frame_id=frame_id,
+                next_id=next_id,
+                create_track_fn=create_track,
+            )
+
+        cur = []
+        for tr in tracks:
+            bb = get_track_bbox_xywh(tr)
+            state = "det" if tr.last_update_frame == frame_id else "pred"
+            cur.append((tr.track_id, bb, state))
+        frame_tracks[frame_id] = cur
+
+    results = []
+    for fr, items in frame_tracks.items():
+        for tid, bb, state in items:
+            x, y, w, h = bb
+            results.append((fr, tid, x, y, w, h, state))
+
+    stats = {
+        "total_frames": len(detection_data),
+        "final_tracks": len(tracks),
+        "association": "MHT",
+    }
+
+    return results, frame_tracks, stats
+
 
 def run_tracking_kalman_hungarian(detection_data: Dict[int, List[Tuple[float, float, float, float]]]):
     tracks: List[Track] = []
     next_id = 0
-
     frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float, float, float], str]]] = {}
 
     total_matches = 0
@@ -379,6 +463,7 @@ def run_tracking_kalman_hungarian(detection_data: Dict[int, List[Tuple[float, fl
         "total_matches": total_matches,
         "final_active_tracks": len(tracks),
     }
+
     return results, frame_tracks, stats
 
 
@@ -391,6 +476,7 @@ def save_tracks_txt(results, out_path: str):
         for fr, tid, x, y, w, h, state in results:
             f.write(f"{fr} {tid} {x:.3f} {y:.3f} {w:.3f} {h:.3f} {state}\n")
 
+
 def make_track_series(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float, float, float], str]]]):
     points: Dict[int, List[Tuple[float, float, int, str]]] = {}
     bboxes: Dict[int, List[Tuple[int, Tuple[float, float, float, float], str]]] = {}
@@ -401,7 +487,9 @@ def make_track_series(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float
             cx, cy = x + w / 2.0, y + h / 2.0
             points.setdefault(tid, []).append((cx, cy, fr, state))
             bboxes.setdefault(tid, []).append((fr, bb, state))
+
     return points, bboxes
+
 
 def select_topk_track_ids(frame_tracks, k=4) -> List[int]:
     points, _ = make_track_series(frame_tracks)
@@ -409,12 +497,14 @@ def select_topk_track_ids(frame_tracks, k=4) -> List[int]:
     tids_sorted = sorted(lengths.keys(), key=lambda t: lengths[t], reverse=True)
     return tids_sorted[:k]
 
+
 def filter_frame_tracks_by_ids(frame_tracks, keep_ids: List[int]):
     keep = set(keep_ids)
     out = {}
     for fr, items in frame_tracks.items():
         out[fr] = [it for it in items if it[0] in keep]
     return out
+
 
 def plot_mot(out_png: str, frame_tracks):
     ensure_dir(os.path.dirname(out_png))
@@ -440,10 +530,8 @@ def plot_mot(out_png: str, frame_tracks):
         xs = [p[0] for p in seq]
         ys = [p[1] for p in seq]
         ax.plot(xs, ys, linewidth=2.2, color=c, label=f"UAV {selected.index(tid)+1} (tid={tid})")
-        ax.scatter([xs[0]], [ys[0]], s=24, color=c, marker="o",
-                   edgecolors="black", linewidths=0.5, zorder=6)
-        ax.scatter([xs[-1]], [ys[-1]], s=34, color=c, marker="s",
-                   edgecolors="black", linewidths=0.5, zorder=7)
+        ax.scatter([xs[0]], [ys[0]], s=24, color=c, marker="o", edgecolors="black", linewidths=0.5, zorder=6)
+        ax.scatter([xs[-1]], [ys[-1]], s=34, color=c, marker="s", edgecolors="black", linewidths=0.5, zorder=7)
 
     for tid in selected:
         c = tid2color[tid]
@@ -451,13 +539,22 @@ def plot_mot(out_png: str, frame_tracks):
             x, y, w, h = bb
             ls = "-" if state == "det" else "--"
             alpha = BBOX_ALPHA if state == "det" else 0.35
-            ax.add_patch(Rectangle((x, y), w, h, fill=False, edgecolor=c,
-                                   linewidth=BBOX_LINEWIDTH, alpha=alpha,
-                                   linestyle=ls, zorder=3))
+            ax.add_patch(
+                Rectangle(
+                    (x, y),
+                    w,
+                    h,
+                    fill=False,
+                    edgecolor=c,
+                    linewidth=BBOX_LINEWIDTH,
+                    alpha=alpha,
+                    linestyle=ls,
+                    zorder=3,
+                )
+            )
 
     ax.set_title(f"UAV MOT (Kalman+Hungarian) | window={WINDOW_SIZE}", fontsize=12)
     ax.legend(loc="upper right", fontsize=8, framealpha=0.9)
-
     plt.tight_layout()
     fig.savefig(out_png, bbox_inches="tight")
     plt.close(fig)
@@ -493,11 +590,14 @@ def read_gt_csv(gt_path: str) -> Dict[int, List[Tuple[int, Tuple[float, float, f
         for row in reader:
             fr = int(float(row[c_frame]))
             gid = int(float(row[c_id]))
-            x = float(row[c_x]); y = float(row[c_y])
+            x = float(row[c_x])
+            y = float(row[c_y])
             w = float(row[c_w]) if (c_w and row.get(c_w, "") != "") else 0.0
             h = float(row[c_h]) if (c_h and row.get(c_h, "") != "") else 0.0
             gt_by_frame.setdefault(fr, []).append((gid, (x, y, w, h)))
+
         return gt_by_frame
+
 
 def compute_no_gt_metrics(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float, float, float], str]]],
                           total_frames: int) -> Dict[str, float]:
@@ -517,6 +617,7 @@ def compute_no_gt_metrics(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, f
     for tid, seq in points.items():
         frames = np.array([p[2] for p in seq], dtype=np.int32)
         states = [p[3] for p in seq]
+
         br = int(np.sum((frames[1:] - frames[:-1]) > 1)) if len(frames) > 1 else 0
         breaks.append(br)
 
@@ -530,12 +631,13 @@ def compute_no_gt_metrics(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, f
             if len(v) >= 2:
                 a = np.abs(v[1:] - v[:-1]) / DT
                 mean_accs.append(float(np.mean(a)))
+            else:
+                mean_accs.append(0.0)
         else:
             mean_speeds.append(0.0)
             mean_accs.append(0.0)
 
     top4_coverage = sum(lengths[t] for t in top4) / max(1, sum(lengths.values()))
-
     active_counts = []
     for fr in range(total_frames):
         active_counts.append(len(frame_tracks.get(fr, [])))
@@ -554,6 +656,7 @@ def compute_no_gt_metrics(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, f
         "avg_active_tracks_per_frame": float(np.mean(active_counts)),
         "max_active_tracks_in_a_frame": float(np.max(active_counts)),
     }
+
 
 def evaluate_with_gt(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float, float, float], str]]],
                      gt_by_frame: Dict[int, List[Tuple[int, Tuple[float, float, float, float]]]],
@@ -589,6 +692,7 @@ def evaluate_with_gt(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float,
             FP += len(hyp_items)
             IDFP += len(hyp_items)
             continue
+
         if len(hyp_items) == 0:
             FN += len(gt_items)
             IDFN += len(gt_items)
@@ -607,13 +711,18 @@ def evaluate_with_gt(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float,
                     if iou >= iou_thresh:
                         cost[i, j] = 1.0 - iou
                 else:
-                    gc = bbox_center_xy(gbb) if (gbb[2] > 0 and gbb[3] > 0) else np.array([gbb[0], gbb[1]], np.float32)
+                    gc = (
+                        bbox_center_xy(gbb)
+                        if (gbb[2] > 0 and gbb[3] > 0)
+                        else np.array([gbb[0], gbb[1]], np.float32)
+                    )
                     hc = bbox_center_xy(hbb)
                     d = float(np.linalg.norm(gc - hc))
                     if d <= dist_thresh:
                         cost[i, j] = d
 
         r, c = linear_sum_assignment(cost)
+
         matched_gt = set()
         matched_hyp = set()
 
@@ -624,7 +733,6 @@ def evaluate_with_gt(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float,
             tid, _ = hyp_items[j]
             matched_gt.add(i)
             matched_hyp.add(j)
-
             match_errors.append(float(cost[i, j]))
 
             if gid in prev_match and prev_match[gid] != tid:
@@ -672,6 +780,7 @@ def evaluate_with_gt(frame_tracks: Dict[int, List[Tuple[int, Tuple[float, float,
         "IDF1": float(idf1),
     }
 
+
 def write_report(out_path: str, stats: dict, frame_tracks, gt_path: Optional[str] = None):
     points, _ = make_track_series(frame_tracks)
     lengths = {tid: len(seq) for tid, seq in points.items()}
@@ -680,13 +789,14 @@ def write_report(out_path: str, stats: dict, frame_tracks, gt_path: Optional[str
     breaks = {}
     for tid, seq in points.items():
         frames = [p[2] for p in seq]
-        b = sum(1 for i in range(1, len(frames)) if frames[i] - frames[i-1] > 1)
+        b = sum(1 for i in range(1, len(frames)) if frames[i] - frames[i - 1] > 1)
         breaks[tid] = b
 
     no_gt = compute_no_gt_metrics(frame_tracks, total_frames=stats["total_frames"])
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("=== Tracking report ===\n\n")
+
         f.write("[Run stats]\n")
         for k, v in stats.items():
             f.write(f"{k}: {v}\n")
@@ -697,7 +807,7 @@ def write_report(out_path: str, stats: dict, frame_tracks, gt_path: Optional[str
 
         f.write("\n[Top tracks by length]\n")
         for tid, L in top:
-            f.write(f"  tid={tid}, len={L}, breaks={breaks.get(tid,0)}\n")
+            f.write(f" tid={tid}, len={L}, breaks={breaks.get(tid, 0)}\n")
 
         if gt_path:
             f.write("\n[GT evaluation]\n")
@@ -709,7 +819,7 @@ def write_report(out_path: str, stats: dict, frame_tracks, gt_path: Optional[str
                     total_frames=stats["total_frames"],
                     metric=GT_MATCH_METRIC,
                     dist_thresh=GT_DIST_THRESH,
-                    iou_thresh=GT_IOU_THRESH
+                    iou_thresh=GT_IOU_THRESH,
                 )
                 f.write(f"gt_file: {gt_path}\n")
                 f.write(f"match_metric: {GT_MATCH_METRIC}\n")
@@ -725,6 +835,7 @@ def write_report(out_path: str, stats: dict, frame_tracks, gt_path: Optional[str
         else:
             f.write("\n[GT evaluation]\n")
             f.write("No GT file provided -> cannot compute MOTA/IDF1/HOTA.\n")
+
 
 def dump_json(path: str, obj: dict):
     ensure_dir(os.path.dirname(path))
@@ -748,17 +859,19 @@ def main():
     detection_data = run_detection_windowed(frame_files)
     total_dets = sum(len(v) for v in detection_data.values())
     print(f"[info] total detections across all frames: {total_dets}")
+
     if total_dets == 0:
         raise RuntimeError(
             "所有帧检测结果均为0：请先让 SpatialDroneDetector 在每帧能输出bbox。\n"
             "优先调整 WINDOW_SIZE，或在 SpatialDroneDetector 内调整阈值/连通域面积过滤。"
         )
 
-    results, frame_tracks, stats = run_tracking_kalman_hungarian(detection_data)
+    # results, frame_tracks, stats = run_tracking_kalman_hungarian(detection_data) #使用GNN用这个函数
+    results, frame_tracks, stats = run_tracking_mht(detection_data)  #使用MHT用这个函数
 
-    out_png = os.path.join(OUTPUT_DIR, "mot_plot.png")
-    out_tracks = os.path.join(OUTPUT_DIR, "tracks.txt")
-    out_report = os.path.join(OUTPUT_DIR, "report.txt")
+    out_png = os.path.join(OUTPUT_DIR, "mot_plot_mht.png")
+    out_tracks = os.path.join(OUTPUT_DIR, "tracks_mht.txt")
+    out_report = os.path.join(OUTPUT_DIR, "report_mht.txt")
 
     plot_mot(out_png, frame_tracks)
     save_tracks_txt(results, out_tracks)
@@ -768,12 +881,13 @@ def main():
     top4_ids = select_topk_track_ids(frame_tracks, k=NUM_DRONES_TO_SHOW)
     frame_tracks_top4 = filter_frame_tracks_by_ids(frame_tracks, top4_ids)
 
-    out_report_top4 = os.path.join(OUTPUT_DIR, "report_top4.txt")
+    out_report_top4 = os.path.join(OUTPUT_DIR, "report_top4_mht.txt")
     write_report(out_report_top4, stats, frame_tracks_top4, gt_path=GT_PATH)
 
     # 额外导出 JSON 便于你做参数对比
     metrics_all = compute_no_gt_metrics(frame_tracks, total_frames=stats["total_frames"])
     metrics_top4 = compute_no_gt_metrics(frame_tracks_top4, total_frames=stats["total_frames"])
+
     dump_json(os.path.join(OUTPUT_DIR, "report_all.json"), {"run": stats, "no_gt": metrics_all})
     dump_json(os.path.join(OUTPUT_DIR, "metrics_top4.json"), {"run": stats, "top4_ids": top4_ids, "no_gt": metrics_top4})
 
@@ -782,16 +896,20 @@ def main():
     print(" ", out_tracks)
     print(" ", out_report)
     print(" ", out_report_top4)
-    print(" ", os.path.join(OUTPUT_DIR, "metrics_top4.json"))
+    print(" ", os.path.join(OUTPUT_DIR, "metrics_top4_mht.json"))
+
     if GT_PATH:
         print("[done] GT evaluation enabled:", GT_PATH)
     else:
         print("[info] GT evaluation disabled (GT_PATH=None).")
 
     # 你原来外部 no-gt 评估器：对 tracks.txt（全量）评估
-    eval_no_gt_evaluate(out_tracks,
-                        os.path.join(OUTPUT_DIR, "metrics_no_gt.json"),
-                        os.path.join(OUTPUT_DIR, "report_no_gt.txt"))
+    eval_no_gt_evaluate(
+        out_tracks,
+        os.path.join(OUTPUT_DIR, "metrics_no_gt_mht.json"),
+        os.path.join(OUTPUT_DIR, "report_no_gt_mht.txt"),
+    )
+
 
 if __name__ == "__main__":
     main()

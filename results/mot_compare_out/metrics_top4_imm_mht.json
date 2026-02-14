@@ -1,0 +1,19 @@
+{
+  "run": {
+    "total_frames": 30,
+    "final_tracks": 22,
+    "association": "IMM-MHT",
+    "imm_models": 2,
+    "use_mahalanobis": true
+  },
+  "top4_ids": [
+    0,
+    2,
+    4,
+    5
+  ],
+  "no_gt": {
+    "num_tracks_total": 4.0,
+    "total_frames": 30.0
+  }
+}

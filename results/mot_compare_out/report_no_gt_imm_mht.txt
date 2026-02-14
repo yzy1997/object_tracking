@@ -1,0 +1,33 @@
+==== No-GT Tracking Report ====
+Frames: 29  (range 1..29)
+
+[Counts]
+  AvgTracksPerFrame: 20.000   (expect ~4 if only 4 UAVs)
+  TrackCountStd:     4.698   (lower is more stable)
+  AvgDetPerFrame:    14.793
+  AvgPredPerFrame:   5.207
+  DetRatio(frames):  0.759  (higher => fewer pure predictions)
+
+[Tracks]
+  NumUniqueTracks:         26
+  MeanTrackLen:            22.308
+  MedianTrackLen:          25.000
+  MeanDetRatio_per_track:  0.699
+  MeanFragSegments/track:  1.654 (1 is best; >1 indicates breaks)
+
+[Consistency (No-GT proxy)]
+  GateDist:           4.000
+  EDR (matched obs):  1.000
+  UTR (unmatched trk):0.260
+  MeanMatchedDist:    0.000
+
+[Geometry]
+  OutOfBoundsRatio:   0.000000
+  DuplicationScore:   0.018868 (near-dist=2.0)
+
+[Smoothness]
+  MeanVelStd:         1.923 (lower is smoother)
+
+Notes:
+  - No-GT metrics: these do NOT represent absolute tracking accuracy (MOTA/IDF1).
+  - EDR/UTR here use track points with state=det as observation proxy, so they can be optimistic.

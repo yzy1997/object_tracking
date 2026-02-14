@@ -1,0 +1,28 @@
+=== Tracking report ===
+
+[Run stats]
+total_frames: 30
+final_tracks: 4
+association: IMM-MHT
+imm: {'p_stay': 0.95, 'q_smooth': (1.0, 0.5), 'q_maneuver': (6.0, 3.0)}
+det_filter: {'topk': 6, 'dedup_dist': 3.0, 'force_keep_tracks': 4}
+
+[No-GT quality metrics]
+num_tracks_total: 1.0
+top4_coverage_ratio: 1.0
+avg_track_len: 110.0
+median_track_len: 110.0
+avg_breaks_per_track: 0.0
+median_breaks_per_track: 0.0
+avg_pred_ratio: 0.17272727272727273
+median_pred_ratio: 0.17272727272727273
+avg_speed(px/frame): 18.99422836303711
+avg_acc(px/frame^2): 14.722887992858887
+avg_active_tracks_per_frame: 3.6666666666666665
+max_active_tracks_in_a_frame: 4.0
+
+[Top tracks by length]
+  tid=0, len=110, breaks=0
+
+[GT evaluation]
+No GT file provided -> cannot compute MOTA/IDF1/HOTA.

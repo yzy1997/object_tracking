@@ -1,0 +1,42 @@
+{
+  "Frames": {
+    "count": 29,
+    "first": 1,
+    "last": 29
+  },
+  "Counts": {
+    "AvgTracksPerFrame": 4.0,
+    "TrackCountStd": 0.0,
+    "AvgDetPerFrame": 3.6206896551724137,
+    "AvgPredPerFrame": 0.3793103448275862,
+    "DetRatio_over_frames": 0.9051724137931034
+  },
+  "Tracks": {
+    "NumUniqueTracks": 4,
+    "MeanTrackLen": 29.0,
+    "MedianTrackLen": 29.0,
+    "MeanDetRatio_per_track": 0.9051724137931034,
+    "MedianDetRatio_per_track": 1.0,
+    "MeanFragSegments_per_track": 1.5,
+    "MedianFragSegments_per_track": 1.0
+  },
+  "Geometry": {
+    "OutOfBoundsRatio": 0.0,
+    "DuplicationScore_near_pairs_ratio": 0.0,
+    "DupNearDist": 2.0
+  },
+  "Consistency_NoGT": {
+    "GateDist": 4.0,
+    "EDR_matched_obs_ratio": 1.0,
+    "UTR_unmatched_track_ratio": 0.09482758620689657,
+    "MeanMatchedDist": 0.0
+  },
+  "Smoothness": {
+    "MeanVelStd": 0.34408333126208546,
+    "MedianVelStd": 0.05453502431970707
+  },
+  "Notes": [
+    "No-GT metrics: these do NOT represent absolute tracking accuracy (MOTA/IDF1).",
+    "EDR/UTR here use track points with state=det as observation proxy, so they can be optimistic."
+  ]
+}

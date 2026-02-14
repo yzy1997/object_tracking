@@ -1,0 +1,13 @@
+=== Tracking report ===
+
+association: IMM-MHT(hardened-preselect-4)
+total_frames: 30
+init_frame: 1
+final_tracks: 4
+preselect_gate: 10.0
+gate_assoc: 12.0
+birth_penalty: 1000000.0
+imm: {'p_stay': 0.95, 'q_smooth': (1.0, 0.5), 'q_maneuver': (6.0, 3.0)}
+
+[GT evaluation]
+No GT file provided -> cannot compute MOTA/IDF1/HOTA.

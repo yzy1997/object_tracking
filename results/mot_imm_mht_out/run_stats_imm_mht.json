@@ -1,0 +1,10 @@
+{
+  "total_frames": 30,
+  "final_tracks": 10,
+  "association": "IMM-MHT",
+  "window": 6,
+  "gating_chi2": 9.21,
+  "lambda_v": 0.35,
+  "lambda_wh": 0.05,
+  "max_confirmed": 4
+}

@@ -12,12 +12,12 @@
       "q_maneuver": [
         6.0,
         3.0
-      ]
-    },
-    "det_filter": {
-      "topk": 6,
-      "dedup_dist": 3.0,
-      "force_keep_tracks": 4
+      ],
+      "chi2_gate": 9.21,
+      "birth_penalty": 25.0,
+      "miss_penalty": 2.0,
+      "max_births_per_frame": 1,
+      "alt_branch_k": 0
     }
   },
   "no_gt": {
@@ -27,10 +27,10 @@
     "median_track_len": 110.0,
     "avg_breaks_per_track": 0.0,
     "median_breaks_per_track": 0.0,
-    "avg_pred_ratio": 0.17272727272727273,
-    "median_pred_ratio": 0.17272727272727273,
-    "avg_speed(px/frame)": 18.99422836303711,
-    "avg_acc(px/frame^2)": 14.722887992858887,
+    "avg_pred_ratio": 0.02727272727272727,
+    "median_pred_ratio": 0.02727272727272727,
+    "avg_speed(px/frame)": 14.292183876037598,
+    "avg_acc(px/frame^2)": 7.098410606384277,
     "avg_active_tracks_per_frame": 3.6666666666666665,
     "max_active_tracks_in_a_frame": 4.0
   }

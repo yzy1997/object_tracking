@@ -1,0 +1,9 @@
+=== Tracking report ===
+
+association: KF-Hungarian
+gate: 8.0
+final_tracks: 4
+total_frames: 30
+
+[GT evaluation]
+No GT file provided -> cannot compute MOTA/IDF1/HOTA.
