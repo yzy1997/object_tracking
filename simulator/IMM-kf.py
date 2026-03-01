@@ -1,65 +1,3 @@
-"""
-UAV 2D Truth Simulation + 3D Measurements z=[x, y, range rho] + CV-KF tracking (x,y only) + Plots
-Figures saved to: simulator/imgs/
-
-========================
-Motion Plan (Total = 100 s)
-========================
-Segment 1: Constant velocity (CV)
-- T1 = 25 s, v = 5 m/s, a = 0
-- distance ≈ 125 m
-
-Segment 2: Constant acceleration straight (CA)
-- T2 = 20 s, a2 = +0.5 m/s^2
-- v: 5 -> 15 m/s
-- distance ≈ 200 m
-
-Segment 3: Left-turn circular arc (constant-speed turn)
-- T3 = 15 s, R3 = 80 m, v = 15 m/s
-- omega3 = +v/R3 = +0.1875 rad/s
-- turn angle ≈ +161.2 deg, arc length ≈ 225 m
-
-Segment 4: Constant deceleration straight (CD)
-- T4 = 20 s, a4 = -0.4 m/s^2
-- v: 15 -> 7 m/s
-- distance ≈ 220 m
-
-Segment 5: Right-turn circular arc (constant-speed turn)
-- T5 = 20 s, R5 = 120 m, v = 7 m/s
-- omega5 = -v/R5 = -0.05833 rad/s
-- turn angle ≈ -66.8 deg, arc length ≈ 140 m
-
-========================
-Measurement Model (simulated)
-========================
-Sensor position (approx): s = (100, 0, 1000) [m]
-Target altitude (fixed): z0 = 100 [m]
-
-We generate 3D measurements:
-- z = [x_meas, y_meas, rho_meas]
-  where rho = sqrt((x-sx)^2 + (y-sy)^2 + (z0-sz)^2)
-
-Noise (typical at ~1 km):
-- x,y noise: sigma_xy = 3.0 m
-- range noise: sigma_r = 2.0 m
-
-IMPORTANT:
-- The tracker is PURE linear CV-KF and uses ONLY [x_meas, y_meas].
-- rho is generated but intentionally ignored (for later EKF/UKF comparisons).
-
-========================
-Tracker Model (CV-KF, linear)
-========================
-State: [x, y, vx, vy]^T
-F = [[1,0,dt,0],[0,1,0,dt],[0,0,1,0],[0,0,0,1]]
-H = [[1,0,0,0],[0,1,0,0]]
-Process noise: white acceleration, spectral density q (m^2/s^3)
-
-Outputs:
-- Figure 1: "CV-KF Tracking Simulation" (truth vs meas vs KF track + sensor marker)
-- Figure 2: "Tracking RMSE (m) = XX.XX" showing XY-only position error and running RMSE
-"""
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -87,7 +25,7 @@ def simulate_truth(dt=0.5, z0=100.0, seed=0):
       t: (N,)
       truth: (N,4) -> [x, y, vx, vy]
     """
-    # Motion plan
+    # Motion plan (same as before)
     T1, v1 = 25.0, 5.0
     T2, a2 = 20.0, +0.5
     T3, R3, v3 = 15.0, 80.0, 15.0
@@ -131,35 +69,31 @@ def simulate_truth(dt=0.5, z0=100.0, seed=0):
         heading = heading_new
         vx, vy, x, y = vx_new, vy_new, x_new, y_new
 
-    # Segment 1
+    # Simulate truth motion
     n1 = int(np.round(T1 / dt))
     for _ in range(n1):
         push()
         step_straight(a_long=0.0)
         t += dt
 
-    # Segment 2
     n2 = int(np.round(T2 / dt))
     for _ in range(n2):
         push()
         step_straight(a_long=a2)
         t += dt
 
-    # Segment 3
     n3 = int(np.round(T3 / dt))
     for _ in range(n3):
         push()
         step_turn(omega=omega3, v_const=v3)
         t += dt
 
-    # Segment 4
     n4 = int(np.round(T4 / dt))
     for _ in range(n4):
         push()
         step_straight(a_long=a4)
         t += dt
 
-    # Segment 5
     n5 = int(np.round(T5 / dt))
     for _ in range(n5):
         push()
@@ -196,73 +130,110 @@ def simulate_measurements(t, truth, sensor_pos=(100.0, 0.0, 1000.0), z0=100.0,
 
 
 # -------------------------
-# CV-KF (linear) Tracker
+# IMM-KF Tracker (Multiple Models)
 # -------------------------
-class CVKalmanFilter2D:
+class IMMKalmanFilter:
     """
     State: [x, y, vx, vy]
-    Measurement used: [x, y] only
+    Model 1: Constant velocity (CV-KF)
+    Model 2: Constant acceleration (CA-KF)
     """
-    def __init__(self, dt, q=0.6, r_xy=3.0, P0=None):
+    def __init__(self, dt, q_cv=0.6, q_ca=0.6, r_xy=3.0):
         self.dt = dt
-        self.q = float(q)
-        self.r_xy = float(r_xy)
+        self.q_cv = q_cv
+        self.q_ca = q_ca
+        self.r_xy = r_xy
 
-        self.F = np.array([
-            [1, 0, dt, 0],
-            [0, 1, 0, dt],
-            [0, 0, 1,  0],
-            [0, 0, 0,  1]
-        ], dtype=float)
+        # State transition matrices for each model
+        self.F_cv = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float)
+        self.F_ca = np.array([[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, dt], [0, 0, 0, 1]], dtype=float)
 
-        self.H = np.array([
-            [1, 0, 0, 0],
-            [0, 1, 0, 0]
-        ], dtype=float)
+        # Measurement matrix (same for both models)
+        self.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=float)
 
-        dt2 = dt * dt
-        dt3 = dt2 * dt
-        dt4 = dt2 * dt2
-        q = self.q
-        Q1 = q * np.array([[dt4 / 4, dt3 / 2],
-                           [dt3 / 2, dt2]], dtype=float)
-        self.Q = np.block([
-            [Q1, np.zeros((2, 2))],
-            [np.zeros((2, 2)), Q1]
-        ])
+        # Process noise covariance for each model (4x4 matrices now)
+        self.Q_cv = self.q_cv * np.array([[self.dt**4 / 4, self.dt**3 / 2, 0, 0],
+                                          [self.dt**3 / 2, self.dt**2, 0, 0],
+                                          [0, 0, self.dt**4 / 4, self.dt**3 / 2],
+                                          [0, 0, self.dt**3 / 2, self.dt**2]], dtype=float)
+        self.Q_ca = self.q_ca * np.array([[self.dt**4 / 4, self.dt**3 / 2, 0, 0],
+                                          [self.dt**3 / 2, self.dt**2, 0, 0],
+                                          [0, 0, self.dt**4 / 4, self.dt**3 / 2],
+                                          [0, 0, self.dt**3 / 2, self.dt**2]], dtype=float)
 
-        self.R = (self.r_xy ** 2) * np.eye(2)
+        # Measurement noise covariance (same for both models)
+        self.R = (self.r_xy**2) * np.eye(2)
 
-        self.x = np.zeros(4)
-        self.P = np.eye(4) if P0 is None else P0.copy()
-        self.I = np.eye(4)
+        # Initial state estimates and covariances
+        self.P_cv = np.eye(4) * 500  # Initial covariance for CV-KF
+        self.P_ca = np.eye(4) * 500  # Initial covariance for CA-KF
 
-    def init_from_measurement(self, z_xy, v0=(0.0, 0.0), P_pos=50.0, P_vel=25.0):
-        self.x = np.array([z_xy[0], z_xy[1], v0[0], v0[1]], dtype=float)
-        self.P = np.diag([P_pos**2, P_pos**2, P_vel**2, P_vel**2]).astype(float)
+        self.x_cv = np.zeros(4)
+        self.x_ca = np.zeros(4)
 
-    def predict(self):
-        self.x = self.F @ self.x
-        self.P = self.F @ self.P @ self.F.T + self.Q
+    def predict(self, model):
+        """
+        Predict the next state based on the model selected.
+        """
+        if model == 1:  # CV model
+            self.x_cv = self.F_cv @ self.x_cv
+            self.P_cv = self.F_cv @ self.P_cv @ self.F_cv.T + self.Q_cv
+        else:  # CA model
+            self.x_ca = self.F_ca @ self.x_ca
+            self.P_ca = self.F_ca @ self.P_ca @ self.F_ca.T + self.Q_ca
 
-    def update(self, z_xy):
+    def update(self, z_xy, model):
+        """
+        Update the state using the measurement z_xy based on the model selected.
+        """
         z = np.asarray(z_xy, dtype=float).reshape(2)
-        y = z - (self.H @ self.x)
-        S = self.H @ self.P @ self.H.T + self.R
-        K = self.P @ self.H.T @ np.linalg.inv(S)
-        self.x = self.x + K @ y
-        self.P = (self.I - K @ self.H) @ self.P
+        if model == 1:  # CV model
+            y = z - (self.H @ self.x_cv)
+            S = self.H @ self.P_cv @ self.H.T + self.R
+            K = self.P_cv @ self.H.T @ np.linalg.inv(S)
+            self.x_cv = self.x_cv + K @ y
+            self.P_cv = (np.eye(4) - K @ self.H) @ self.P_cv
+        else:  # CA model
+            y = z - (self.H @ self.x_ca)
+            S = self.H @ self.P_ca @ self.H.T + self.R
+            K = self.P_ca @ self.H.T @ np.linalg.inv(S)
+            self.x_ca = self.x_ca + K @ y
+            self.P_ca = (np.eye(4) - K @ self.H) @ self.P_ca
+
+    def get_state(self, model):
+        """
+        Return the state estimate for the selected model.
+        """
+        if model == 1:
+            return self.x_cv
+        else:
+            return self.x_ca
+
+    def get_error_covariance(self, model):
+        """
+        Return the error covariance matrix for the selected model.
+        """
+        if model == 1:
+            return self.P_cv
+        else:
+            return self.P_ca
 
 
-def run_kf(t, meas_xyz, dt):
-    kf = CVKalmanFilter2D(dt=dt, q=0.6, r_xy=3.0)
-    kf.init_from_measurement(meas_xyz[0, :2], v0=(0.0, 0.0), P_pos=60.0, P_vel=30.0)
+def run_imm_kf(t, meas_xyz, dt):
+    imm_kf = IMMKalmanFilter(dt=dt)
 
     est = np.zeros((len(t), 4))
     for k in range(len(t)):
-        kf.predict()
-        kf.update(meas_xyz[k, :2])
-        est[k] = kf.x
+        # Predict and update for both models
+        imm_kf.predict(model=1)
+        imm_kf.update(meas_xyz[k, :2], model=1)
+
+        imm_kf.predict(model=2)
+        imm_kf.update(meas_xyz[k, :2], model=2)
+
+        # Combine estimates (weighted by likelihood)
+        est[k] = (imm_kf.get_state(model=1) + imm_kf.get_state(model=2)) / 2
+
     return est
 
 
@@ -280,7 +251,7 @@ def make_plots(t, truth, meas, est, sensor_pos=(100.0, 0.0, 1000.0), out_dir="si
     fig1, ax1 = plt.subplots(figsize=(8.6, 6.6))
     ax1.plot(truth_xy[:, 0], truth_xy[:, 1], "-", linewidth=2.2, label="Truth trajectory")
     ax1.plot(meas_xy[:, 0], meas_xy[:, 1], "x", markersize=3.5, alpha=0.7, label="Measurements (x,y)")
-    ax1.plot(est_xy[:, 0], est_xy[:, 1], "--", linewidth=2.0, label="CV-KF track")
+    ax1.plot(est_xy[:, 0], est_xy[:, 1], "--", linewidth=2.0, label="IMM-KF track")
 
     # Sensor marker (green triangle) in XY plane
     sx, sy, _sz = sensor_pos
@@ -288,12 +259,12 @@ def make_plots(t, truth, meas, est, sensor_pos=(100.0, 0.0, 1000.0), out_dir="si
 
     ax1.set_xlabel("X (m)")
     ax1.set_ylabel("Y (m)")
-    ax1.set_title("CV-KF Tracking Simulation")
+    ax1.set_title("IMM-KF Tracking Simulation")
     ax1.grid(True, linestyle=":", linewidth=0.8)
     ax1.legend(loc="best")
     ax1.set_aspect("equal", adjustable="datalim")
 
-    save_path_traj = os.path.join(out_dir, "cv_kf_tracking.png")
+    save_path_traj = os.path.join(out_dir, "imm_kf_tracking.png")
     fig1.tight_layout()
     fig1.savefig(save_path_traj, dpi=dpi, bbox_inches="tight")
     plt.show()
@@ -323,7 +294,7 @@ def make_plots(t, truth, meas, est, sensor_pos=(100.0, 0.0, 1000.0), out_dir="si
     ax2.grid(True, linestyle=":", linewidth=0.8)
     ax2.legend(loc="best")
 
-    save_path_rmse = os.path.join(out_dir, "rmse_cv_kf.png")
+    save_path_rmse = os.path.join(out_dir, "rmse_imm_kf.png")
     fig2.tight_layout()
     fig2.savefig(save_path_rmse, dpi=dpi, bbox_inches="tight")
     plt.show()
@@ -344,7 +315,7 @@ def main():
         sigma_xy=sigma_xy, sigma_r=sigma_r, seed=1
     )
 
-    est = run_kf(t, meas, dt)
+    est = run_imm_kf(t, meas, dt)
 
     make_plots(t, truth, meas, est, sensor_pos=sensor_pos, out_dir="simulator/imgs", dpi=220)
 

@@ -1,201 +1,6 @@
-"""
-无人机轨迹仿真（2D真值） + 3D观测 z=[x, y, 距离rho] + CV-EKF追踪 + 轨迹图&误差图（保存到 simulator/imgs/）
-
-========================
-运动方案（总时长约 100 s）
-========================
-采样周期：
-- dt = 0.5 s  （你可改为 0.2/1.0）
-
-状态与坐标：
-- 目标在XY平面运动，目标高度 z0 固定（仅用于距离rho计算）：z0 = 100 m
-- 传感器（观测点/雷达）位置 sensor_pos = (100, 0, 1000) m  （按你要求移到该位置附近）
-- 真值初始位置 (x0,y0) = (0,0)，初始航向沿 +x
-- 初始速度 v0 = 5 m/s
-
-5段运动（匀速→匀加速→左转→匀减速→右转），时长分配为 100 s：
-1) 段1 匀速直线（CV）
-   - T1 = 25 s, v = 5 m/s, a = 0, 距离≈125 m
-
-2) 段2 匀加速直线（CA）
-   - T2 = 20 s, a2 = +0.5 m/s^2
-   - v: 5 -> 15 m/s, 距离≈200 m
-
-3) 段3 左转圆弧（恒速转弯）
-   - T3 = 15 s, R3 = 80 m, v = 15 m/s
-   - omega3 = +v/R = +0.1875 rad/s
-   - 转角≈161.2 deg, 弧长≈225 m
-
-4) 段4 匀减速直线（CD）
-   - T4 = 20 s, a4 = -0.4 m/s^2
-   - v: 15 -> 7 m/s, 距离≈220 m
-
-5) 段5 右转圆弧（恒速转弯）
-   - T5 = 20 s, R5 = 120 m, v = 7 m/s
-   - omega5 = -v/R = -0.05833 rad/s
-   - 转角≈-66.8 deg, 弧长≈140 m
-
-========================
-观测模型（3D数据）
-========================
-观测 z = [x_meas, y_meas, rho_meas]^T
-- x_meas, y_meas：带噪声的平面位置
-- rho_meas：传感器到目标的距离（含高度差）
-
-噪声强度（距离相关标定）：
-- sigma_xy(r)  = sigma0_xy  + k_xy  * r
-- sigma_rho(r) = sigma0_rho + k_rho * r
-Rk = diag([sigma_xy^2, sigma_xy^2, sigma_rho^2])
-
-默认：
-- sigma0_xy=1.5 m, k_xy=0.0012
-- sigma0_rho=2.5 m, k_rho=0.0020
-
-========================
-滤波器：CV-EKF
-========================
-状态：x=[px, py, vx, vy]^T
-预测：CV线性模型 + 白加速度过程噪声Q(q)
-更新：z=[px, py, rho(px,py)] -> EKF更新
-
-输出图片：
-- simulator/imgs/cv_kf_tracking.png 标题：“CV-KF追踪仿真图”
-- simulator/imgs/rmse_cn.png        标题：“跟踪误差RMSE（米）”
-"""
-
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-
-
-def simulate_truth_2d_piecewise(
-    dt=0.5,
-    z0=100.0,
-    x0=0.0, y0=0.0, v0=5.0, psi0=0.0,
-    T1=25.0,
-    T2=20.0, a2=+0.5,
-    T3=15.0, R3=80.0,
-    T4=20.0, a4=-0.4,
-    T5=20.0, R5=120.0,
-):
-    T_total = T1 + T2 + T3 + T4 + T5
-    N = int(np.floor(T_total / dt)) + 1
-    t = np.arange(N) * dt
-
-    x = np.zeros(N)
-    y = np.zeros(N)
-    vx = np.zeros(N)
-    vy = np.zeros(N)
-    psi = np.zeros(N)
-    vmag = np.zeros(N)
-
-    x[0], y[0] = x0, y0
-    psi[0] = psi0
-    vmag[0] = v0
-    vx[0] = v0 * np.cos(psi0)
-    vy[0] = v0 * np.sin(psi0)
-
-    edges = np.cumsum([0.0, T1, T2, T3, T4, T5])
-
-    # for reporting
-    v1 = v0
-    v2_end = v1 + a2 * T2
-    v3 = v2_end
-    omega3 = +v3 / R3
-    dtheta3 = omega3 * T3
-    v4_start = v3
-    v4_end = v4_start + a4 * T4
-    v5 = v4_end
-    omega5 = -v5 / R5
-    dtheta5 = omega5 * T5
-
-    for k in range(1, N):
-        ti = t[k - 1]
-
-        v_prev = vmag[k - 1]
-        psi_prev = psi[k - 1]
-
-        if ti < edges[1]:
-            v_new = v_prev
-            psi_new = psi_prev
-        elif ti < edges[2]:
-            v_new = max(v_prev + a2 * dt, 0.0)
-            psi_new = psi_prev
-        elif ti < edges[3]:
-            v_new = v3
-            psi_new = psi_prev + omega3 * dt
-        elif ti < edges[4]:
-            v_new = max(v_prev + a4 * dt, 0.0)
-            psi_new = psi_prev
-        else:
-            v_new = max(v5, 1e-6)
-            psi_new = psi_prev + omega5 * dt
-
-        vx[k] = v_new * np.cos(psi_new)
-        vy[k] = v_new * np.sin(psi_new)
-        x[k] = x[k - 1] + vx[k] * dt
-        y[k] = y[k - 1] + vy[k] * dt
-        psi[k] = psi_new
-        vmag[k] = v_new
-
-    params = {
-        "dt": dt,
-        "T_total": T_total,
-        "z0": z0,
-        "segments": {
-            "seg1": {"type": "CV", "T": T1, "v": v1, "a": 0.0},
-            "seg2": {"type": "CA", "T": T2, "a": a2, "v_start": v1, "v_end": v2_end},
-            "seg3": {"type": "Left Turn", "T": T3, "R": R3, "v": v3, "omega": omega3,
-                     "dtheta_rad": dtheta3, "dtheta_deg": np.degrees(dtheta3)},
-            "seg4": {"type": "CD", "T": T4, "a": a4, "v_start": v4_start, "v_end": v4_end},
-            "seg5": {"type": "Right Turn", "T": T5, "R": R5, "v": v5, "omega": omega5,
-                     "dtheta_rad": dtheta5, "dtheta_deg": np.degrees(dtheta5)},
-        }
-    }
-
-    return {"t": t, "x": x, "y": y, "vx": vx, "vy": vy, "psi": psi, "vmag": vmag, "z0": z0, "params": params}
-
-
-def make_measurements_xy_rho(
-    truth,
-    sensor_pos=(100.0, 0.0, 1000.0),
-    sigma0_xy=1.5, k_xy=0.0012,
-    sigma0_rho=2.5, k_rho=0.0020,
-    rng=None,
-):
-    if rng is None:
-        rng = np.random.default_rng(0)
-
-    xs, ys, zs = sensor_pos
-    x = truth["x"]
-    y = truth["y"]
-    z0 = truth["z0"]
-
-    dx = x - xs
-    dy = y - ys
-    dz = z0 - zs
-    rho_true = np.sqrt(dx * dx + dy * dy + dz * dz)
-
-    sigma_xy = sigma0_xy + k_xy * rho_true
-    sigma_rho = sigma0_rho + k_rho * rho_true
-
-    z = np.zeros((len(x), 3))
-    z[:, 0] = x + rng.normal(0.0, sigma_xy)
-    z[:, 1] = y + rng.normal(0.0, sigma_xy)
-    z[:, 2] = rho_true + rng.normal(0.0, sigma_rho)
-
-    R_list = np.zeros((len(x), 3, 3))
-    for i in range(len(x)):
-        R_list[i] = np.diag([sigma_xy[i] ** 2, sigma_xy[i] ** 2, sigma_rho[i] ** 2])
-
-    return {
-        "z": z,
-        "R_list": R_list,
-        "sensor_pos": np.array(sensor_pos, dtype=float),
-        "rho_true": rho_true,
-        "sigma_xy": sigma_xy,
-        "sigma_rho": sigma_rho,
-    }
 
 
 class CVEKF2D:
@@ -272,6 +77,193 @@ class CVEKF2D:
         return self.x.copy(), self.P.copy()
 
 
+class IMM_EKF:
+    def __init__(self, dt, q=0.8):
+        self.dt = float(dt)
+        self.q = float(q)
+        self.x = np.zeros(4)
+        self.P = np.eye(4) * 100.0
+        self.I = np.eye(4)
+        self.model_probs = np.array([0.5, 0.5])  # 初始模型概率
+        self.models = [CVEKF2D(dt, q), CVEKF2D(dt, q)]  # 两种运动模型：匀速（CV）和匀加速（CA）
+
+    def F(self, model_idx):
+        if model_idx == 0:  # CV 模型
+            return np.array([[1, 0, self.dt, 0],
+                             [0, 1, 0, self.dt],
+                             [0, 0, 1, 0],
+                             [0, 0, 0, 1]], dtype=float)
+        else:  # CA 模型
+            return np.array([[1, 0, self.dt, 0.5 * self.dt ** 2],
+                             [0, 1, 0, 0.5 * self.dt ** 2],
+                             [0, 0, 1, self.dt],
+                             [0, 0, 0, 1]], dtype=float)
+
+    def Q(self, model_idx):
+        dt = self.dt
+        q = self.q
+        if model_idx == 0:  # CV 模型
+            return q * np.array([[dt**4/4, 0, dt**3/2, 0],
+                                 [0, dt**4/4, 0, dt**3/2],
+                                 [dt**3/2, 0, dt**2, 0],
+                                 [0, dt**3/2, 0, dt**2]], dtype=float)
+        else:  # CA 模型
+            return q * np.array([[dt**4/4, 0, dt**3/2, 0],
+                                 [0, dt**4/4, 0, dt**3/2],
+                                 [dt**3/2, 0, dt**2, 0],
+                                 [0, dt**3/2, 0, dt**2]], dtype=float)
+
+    def predict(self):
+        model_predictions = []
+        model_covariances = []
+
+        for i, model in enumerate(self.models):
+            F = self.F(i)
+            Q = self.Q(i)
+            model.x = F @ model.x
+            model.P = F @ model.P @ F.T + Q
+            model_predictions.append(model.x)
+            model_covariances.append(model.P)
+
+        # 结合各模型的估计结果
+        self.x = np.sum(np.array(model_predictions) * self.model_probs[:, None], axis=0)
+        self.P = np.sum(np.array(model_covariances) * self.model_probs[:, None, None], axis=0)
+
+    def update(self, z, R, sensor_pos, z0):
+        z = np.asarray(z, dtype=float).reshape(3)
+        H = CVEKF2D.H_jac(self.x, sensor_pos, z0)
+        zhat = CVEKF2D.h(self.x, sensor_pos, z0)
+        y = z - zhat
+
+        S = H @ self.P @ H.T + R
+        K = self.P @ H.T @ np.linalg.inv(S)
+
+        self.x = self.x + K @ y
+        self.P = (self.I - K @ H) @ self.P
+
+    def step(self, z, R, sensor_pos, z0):
+        self.predict()
+        self.update(z, R, sensor_pos, z0)
+        return self.x.copy(), self.P.copy()
+
+
+def simulate_truth_2d_piecewise(
+    dt=0.5,
+    z0=100.0,
+    x0=0.0, y0=0.0, v0=5.0, psi0=0.0,
+    T1=25.0,
+    T2=20.0, a2=+0.5,
+    T3=15.0, R3=80.0,
+    T4=20.0, a4=-0.4,
+    T5=20.0, R5=120.0,
+):
+    T_total = T1 + T2 + T3 + T4 + T5
+    N = int(np.floor(T_total / dt)) + 1
+    t = np.arange(N) * dt
+
+    x = np.zeros(N)
+    y = np.zeros(N)
+    vx = np.zeros(N)
+    vy = np.zeros(N)
+    psi = np.zeros(N)
+    vmag = np.zeros(N)
+
+    x[0], y[0] = x0, y0
+    psi[0] = psi0
+    vmag[0] = v0
+    vx[0] = v0 * np.cos(psi0)
+    vy[0] = v0 * np.sin(psi0)
+
+    edges = np.cumsum([0.0, T1, T2, T3, T4, T5])
+
+    # for reporting
+    v1 = v0
+    v2_end = v1 + a2 * T2  # 匀加速段结束时的速度
+    v3 = v2_end
+    omega3 = +v3 / R3
+    dtheta3 = omega3 * T3
+    v4_start = v3
+    v4_end = v4_start + a4 * T4
+    v5 = v4_end
+    omega5 = -v5 / R5
+    dtheta5 = omega5 * T5
+
+    for k in range(1, N):
+        ti = t[k - 1]
+
+        v_prev = vmag[k - 1]
+        psi_prev = psi[k - 1]
+
+        if ti < edges[1]:
+            v_new = v_prev
+            psi_new = psi_prev
+        elif ti < edges[2]:
+            v_new = max(v_prev + a2 * dt, 0.0)
+            psi_new = psi_prev
+        elif ti < edges[3]:
+            v_new = v3
+            psi_new = psi_prev + omega3 * dt
+        elif ti < edges[4]:
+            v_new = max(v_prev + a4 * dt, 0.0)
+            psi_new = psi_prev
+        else:
+            v_new = max(v5, 1e-6)
+            psi_new = psi_prev + omega5 * dt
+
+        vx[k] = v_new * np.cos(psi_new)
+        vy[k] = v_new * np.sin(psi_new)
+        x[k] = x[k - 1] + vx[k] * dt
+        y[k] = y[k - 1] + vy[k] * dt
+        psi[k] = psi_new
+        vmag[k] = v_new
+
+    params = {
+        "dt": dt,
+        "T_total": T_total,
+        "z0": z0,
+        "segments": {
+            "seg1": {"type": "CV", "T": T1, "v": v1, "a": 0.0},
+            "seg2": {"type": "CA", "T": T2, "a": a2, "v_start": v1, "v_end": v2_end},
+            "seg3": {"type": "Left Turn", "T": T3, "R": R3, "v": v3, "omega": omega3,
+                     "dtheta_rad": dtheta3, "dtheta_deg": np.degrees(dtheta3)},
+            "seg4": {"type": "CD", "T": T4, "a": a4, "v_start": v4_start, "v_end": v4_end},
+            "seg5": {"type": "Right Turn", "T": T5, "R": R5, "v": v5, "omega": omega5,
+                     "dtheta_rad": dtheta5, "dtheta_deg": np.degrees(dtheta5)},
+        }
+    }
+
+    return {"t": t, "x": x, "y": y, "vx": vx, "vy": vy, "psi": psi, "vmag": vmag, "z0": z0, "params": params}
+
+
+def make_measurements_xy_rho(truth, sensor_pos=(100.0, 0.0, 1000.0), sigma0_xy=1.5, k_xy=0.0012, sigma0_rho=2.5, k_rho=0.0020, rng=None):
+    if rng is None:
+        rng = np.random.default_rng(0)
+
+    xs, ys, zs = sensor_pos
+    x = truth["x"]
+    y = truth["y"]
+    z0 = truth["z0"]
+
+    dx = x - xs
+    dy = y - ys
+    dz = z0 - zs
+    rho_true = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+    sigma_xy = sigma0_xy + k_xy * rho_true
+    sigma_rho = sigma0_rho + k_rho * rho_true
+
+    z = np.zeros((len(x), 3))
+    z[:, 0] = x + rng.normal(0.0, sigma_xy)
+    z[:, 1] = y + rng.normal(0.0, sigma_xy)
+    z[:, 2] = rho_true + rng.normal(0.0, sigma_rho)
+
+    R_list = np.zeros((len(x), 3, 3))
+    for i in range(len(x)):
+        R_list[i] = np.diag([sigma_xy[i] ** 2, sigma_xy[i] ** 2, sigma_rho[i] ** 2])
+
+    return {"z": z, "R_list": R_list, "sensor_pos": np.array(sensor_pos, dtype=float), "rho_true": rho_true}
+
+
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
 
@@ -340,8 +332,8 @@ def main():
     # outputs
     out_dir = os.path.join("simulator", "imgs")
     ensure_dir(out_dir)
-    save_path_track = os.path.join(out_dir, "cv_ekf_tracking.png")
-    save_path_rmse = os.path.join(out_dir, "rmse_cv_ekf.png")
+    save_path_track = os.path.join(out_dir, "imm_ekf_tracking.png")
+    save_path_rmse = os.path.join(out_dir, "rmse_imm_ekf.png")
 
     rng = np.random.default_rng(42)
 
@@ -363,14 +355,14 @@ def main():
     z = meas["z"]
     R_list = meas["R_list"]
 
-    ekf = CVEKF2D(dt=dt, q=q)
-    ekf.x = np.array([z[0, 0], z[0, 1], 0.0, 0.0], dtype=float)
-    ekf.P = np.diag([60.0**2, 60.0**2, 30.0**2, 30.0**2])
+    imm_ekf = IMM_EKF(dt=dt, q=q)
+    imm_ekf.x = np.array([z[0, 0], z[0, 1], 0.0, 0.0], dtype=float)
+    imm_ekf.P = np.diag([60.0**2, 60.0**2, 30.0**2, 30.0**2])
 
     N = len(truth["t"])
     xhat = np.zeros((N, 4))
     for i in range(N):
-        xi, _ = ekf.step(z[i], R_list[i], meas["sensor_pos"], truth["z0"])
+        xi, _ = imm_ekf.step(z[i], R_list[i], meas["sensor_pos"], truth["z0"])
         xhat[i] = xi
 
     truth_xy = np.column_stack([truth["x"], truth["y"]])
@@ -382,7 +374,7 @@ def main():
     fig1, ax1 = plt.subplots(figsize=(9.5, 7.5))
     ax1.plot(truth["x"], truth["y"], "k-", linewidth=2.0, label="Truth trajectory (Truth)")
     ax1.plot(z[:, 0], z[:, 1], "rx", markersize=4, alpha=0.65, label="Measurements (x, y)")
-    ax1.plot(est_xy[:, 0], est_xy[:, 1], "b--", linewidth=2.0, label="Track trajectory (CV-EKF)")
+    ax1.plot(est_xy[:, 0], est_xy[:, 1], "b--", linewidth=2.0, label="Track trajectory (IMM-EKF)")
 
     xs, ys, _ = sensor_pos
     ax1.scatter([xs], [ys], c="g", s=70, marker="^", label="Sensor")
@@ -393,7 +385,7 @@ def main():
 
     ax1.set_xlabel("X (m)")
     ax1.set_ylabel("Y (m)")
-    ax1.set_title("CV-EKF Tracking Simulation")
+    ax1.set_title("IMM-EKF Tracking Simulation")
     ax1.grid(True, linestyle=":", linewidth=0.8)
     ax1.legend(loc="best")
 
