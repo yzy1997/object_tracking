@@ -3,8 +3,12 @@
 [Run stats]
 total_frames: 30
 total_dets: 429
-total_matches: 281
-final_active_tracks: 12
+final_tracks_best_hyp: 12
+association: Kalman + MHT
+window: 6
+gating_distance: 14.0
+max_hypotheses: 24
+n_scan: 2
 
 [No-GT quality metrics]
 num_tracks_total: 13.0
@@ -13,10 +17,10 @@ avg_track_len: 25.76923076923077
 median_track_len: 28.0
 avg_breaks_per_track: 0.0
 median_breaks_per_track: 0.0
-avg_pred_ratio: 0.14821805073794464
+avg_pred_ratio: 0.15616076624034184
 median_pred_ratio: 0.11538461538461539
-avg_speed(px/frame): 3.8945229603694034
-avg_acc(px/frame^2): 1.1157146592934926
+avg_speed(px/frame): 3.919977701627291
+avg_acc(px/frame^2): 2.080142984787623
 avg_active_tracks_per_frame: 11.166666666666666
 max_active_tracks_in_a_frame: 12.0
 
@@ -28,9 +32,29 @@ max_active_tracks_in_a_frame: 12.0
   tid=5, len=28, breaks=0
   tid=6, len=28, breaks=0
   tid=7, len=28, breaks=0
-  tid=8, len=27, breaks=0
-  tid=9, len=27, breaks=0
-  tid=10, len=27, breaks=0
+  tid=44, len=27, breaks=0
+  tid=45, len=27, breaks=0
+  tid=46, len=27, breaks=0
 
 [GT evaluation]
-No GT file provided -> cannot compute MOTA/IDF1/HOTA.
+gt_file: D:\codes\object_tracking\data\out_uav_4_edge_to_edge_bidir\gt_tracks.csv
+match_metric: dist
+dist_thresh: 10.0
+GT_total: 101.0
+FP: 308.0
+FN: 74.0
+Pd: 0.26732673267326734
+IDSW: 11.0
+ID Switch: 11.0
+Frag: 6.0
+RMSE_px: 5.460935560881315
+RMSE_m: 2.1675417795518395
+MOTA: -2.891089108910891
+MOTP_mean_error_px: 4.786364833513896
+IDTP: 27.0
+IDFP: 308.0
+IDFN: 74.0
+IDP: 0.08059701492537313
+IDR: 0.26732673267326734
+IDF1: 0.12385321100917432
+meter_per_pixel: 0.39691766280465507

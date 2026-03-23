@@ -1,5 +1,6 @@
 {
   "total_frames": 30,
+  "total_dets": 429,
   "final_tracks": 10,
   "association": "IMM-MHT",
   "window": 6,

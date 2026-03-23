@@ -4,29 +4,29 @@ Frames: 29  (range 1..29)
 [Counts]
   AvgTracksPerFrame: 11.552   (expect ~4 if only 4 UAVs)
   TrackCountStd:     1.610   (lower is more stable)
-  AvgDetPerFrame:    10.138
-  AvgPredPerFrame:   1.414
-  DetRatio(frames):  0.882  (higher => fewer pure predictions)
+  AvgDetPerFrame:    10.034
+  AvgPredPerFrame:   1.517
+  DetRatio(frames):  0.873  (higher => fewer pure predictions)
 
 [Tracks]
   NumUniqueTracks:         13
   MeanTrackLen:            25.769
   MedianTrackLen:          28.000
-  MeanDetRatio_per_track:  0.852
-  MeanFragSegments/track:  1.154 (1 is best; >1 indicates breaks)
+  MeanDetRatio_per_track:  0.844
+  MeanFragSegments/track:  1.308 (1 is best; >1 indicates breaks)
 
 [Consistency (No-GT proxy)]
   GateDist:           4.000
   EDR (matched obs):  1.000
-  UTR (unmatched trk):0.122
+  UTR (unmatched trk):0.131
   MeanMatchedDist:    0.000
 
 [Geometry]
   OutOfBoundsRatio:   0.000000
-  DuplicationScore:   0.015512 (near-dist=2.0)
+  DuplicationScore:   0.017175 (near-dist=2.0)
 
 [Smoothness]
-  MeanVelStd:         2.549 (lower is smoother)
+  MeanVelStd:         3.192 (lower is smoother)
 
 Notes:
   - No-GT metrics: these do NOT represent absolute tracking accuracy (MOTA/IDF1).

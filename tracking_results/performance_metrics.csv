@@ -1,0 +1,13 @@
+Dataset,Tracker,RMSE (m),Detection Rate,Tracking Accuracy
+600m_flat,CV_KF,1.02,100.0%,90.7%
+600m_flat,CA_EKF,0.80,100.0%,92.6%
+600m_flat,CA_UKF,1.47,100.0%,87.2%
+600m_wave,CV_KF,10.86,100.0%,47.9%
+600m_wave,CA_EKF,6.29,100.0%,61.4%
+600m_wave,CA_UKF,9.64,100.0%,50.9%
+1600m,CV_KF,0.20,100.0%,98.0%
+1600m,CA_EKF,0.18,100.0%,98.3%
+1600m,CA_UKF,0.32,100.0%,96.9%
+1900m,CV_KF,0.35,100.0%,96.6%
+1900m,CA_EKF,0.27,100.0%,97.3%
+1900m,CA_UKF,0.39,100.0%,96.2%

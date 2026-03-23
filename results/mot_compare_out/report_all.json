@@ -1,37 +1,26 @@
 {
   "run": {
     "total_frames": 30,
-    "final_tracks": 4,
-    "association": "IMM-MHT",
-    "imm": {
-      "p_stay": 0.95,
-      "q_smooth": [
-        1.0,
-        0.5
-      ],
-      "q_maneuver": [
-        6.0,
-        3.0
-      ]
-    },
-    "det_filter": {
-      "topk": 6,
-      "dedup_dist": 3.0,
-      "force_keep_tracks": 4
-    }
+    "total_dets": 429,
+    "final_tracks_best_hyp": 12,
+    "association": "Kalman + MHT",
+    "window": 6,
+    "gating_distance": 14.0,
+    "max_hypotheses": 24,
+    "n_scan": 2
   },
   "no_gt": {
-    "num_tracks_total": 1.0,
-    "top4_coverage_ratio": 1.0,
-    "avg_track_len": 110.0,
-    "median_track_len": 110.0,
+    "num_tracks_total": 13.0,
+    "top4_coverage_ratio": 0.34626865671641793,
+    "avg_track_len": 25.76923076923077,
+    "median_track_len": 28.0,
     "avg_breaks_per_track": 0.0,
     "median_breaks_per_track": 0.0,
-    "avg_pred_ratio": 0.17272727272727273,
-    "median_pred_ratio": 0.17272727272727273,
-    "avg_speed(px/frame)": 18.99422836303711,
-    "avg_acc(px/frame^2)": 14.722887992858887,
-    "avg_active_tracks_per_frame": 3.6666666666666665,
-    "max_active_tracks_in_a_frame": 4.0
+    "avg_pred_ratio": 0.15616076624034184,
+    "median_pred_ratio": 0.11538461538461539,
+    "avg_speed(px/frame)": 3.919977701627291,
+    "avg_acc(px/frame^2)": 2.080142984787623,
+    "avg_active_tracks_per_frame": 11.166666666666666,
+    "max_active_tracks_in_a_frame": 12.0
   }
 }

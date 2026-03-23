@@ -1,0 +1,10 @@
+{
+  "total_frames": 30,
+  "total_dets": 302,
+  "final_tracks_best_hyp": 7,
+  "association": "Custom IMM-MHT",
+  "window": 4,
+  "gating_chi2": 5.99,
+  "max_hypotheses": 20,
+  "n_scan": 2
+}

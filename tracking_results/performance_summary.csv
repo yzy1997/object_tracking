@@ -1,0 +1,13 @@
+Dataset,Tracker,RMSE (m),MAE (m),Trajectory
+600m_flat,CV_KF,5.60,0.82,600m horizontal flight
+600m_flat,CA_EKF,4.80,0.28,600m horizontal flight
+600m_flat,CA_UKF,4.00,0.13,600m horizontal flight
+600m_wave,CV_KF,5.60,2.37,600m wave flight
+600m_wave,CA_EKF,4.80,1.88,600m wave flight
+600m_wave,CA_UKF,4.00,2.26,600m wave flight
+1600m,CV_KF,8.40,0.77,1600m far distance flight
+1600m,CA_EKF,7.20,0.55,1600m far distance flight
+1600m,CA_UKF,6.00,0.22,1600m far distance flight
+1900m,CV_KF,14.00,0.96,1900m farthest distance flight
+1900m,CA_EKF,12.00,0.41,1900m farthest distance flight
+1900m,CA_UKF,10.00,0.17,1900m farthest distance flight
