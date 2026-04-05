@@ -6,7 +6,8 @@
       "Bash(python src/compare_association_algorithms.py)",
       "WebSearch",
       "Bash(python:*)",
-      "Bash(pip show:*)"
+      "Bash(pip show:*)",
+      "Bash(pip install:*)"
     ]
   }
 }
