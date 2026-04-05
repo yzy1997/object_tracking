@@ -36,8 +36,8 @@ HEADER = 0xA5
 DIST_MIN, DIST_MAX = 0x0000, 0xFFFF
 
 # >>> set these two paths <<<
-BASE_BG_TXT = r"D:\codes\object_tracking\data\600m2\valid_framedata_0113_3.txt"
-OUT_DIR = r"./data/out_uav_4_edge_to_edge_bidir"
+BASE_BG_TXT = r"D:\codes\object_tracking\data\1900\valid_framedata_0108_1.txt"
+OUT_DIR = r"./data/out_uav_10_edge_to_edge_bidir"
 
 TXT_DIR = os.path.join(OUT_DIR, "txt")
 SUMMARY_HITS_PNG = os.path.join(OUT_DIR, "summary_hits.png")

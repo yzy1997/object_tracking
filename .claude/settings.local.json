@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from PIL import Image; img = Image.open\\('pics/1900/frame_002.png'\\); print\\(f'Image size: {img.size}'\\)\")",
+      "Bash(python src/simulated_trajectory_generator.py)",
+      "Bash(python src/compare_association_algorithms.py)",
+      "WebSearch",
+      "Bash(python:*)",
+      "Bash(pip show:*)"
+    ]
+  }
+}
