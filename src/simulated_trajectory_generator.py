@@ -205,7 +205,7 @@ def visualize_trajectories(trajectories: Dict[int, Dict], output_path: str, bg_i
     ax.set_ylim(0, IMG_H)
     ax.set_xlabel("X (pixel)", fontsize=12)
     ax.set_ylabel("Y (pixel)", fontsize=12)
-    ax.set_title(f"Simulated UAV Trajectories (10 tracks, 25-30 yellow pixels)\nLeft-to-Right with Wave Motion", fontsize=12)
+    ax.set_title(f"1900m UAV Trajectories (10 tracks, 25-30 frames)\nLeft-to-Right with Wave Motion", fontsize=12)
     ax.set_aspect('equal')
     ax.set_facecolor('#1a1a2e')
     ax.grid(True, alpha=0.3, linestyle='--', color='white')
