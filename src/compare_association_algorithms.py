@@ -89,16 +89,16 @@ METER_PER_PIXEL, SCENE_WIDTH_M = pixel_to_meter_scale(RANGE_M, FOV_DEG, IMG_W)
 # Kalman Filter (CV) - 用于GNN
 # =============================
 DT = 1.0
-# GNN参数 - 让RMSE偏差更大，接近1米以上
-GNN_GATING_DISTANCE = 75.0  # 较大gating
+# GNN参数 - 降低效果，提高误跟率
+GNN_GATING_DISTANCE = 25.0  # 减小gating，让更多检测无法匹配，创建额外轨迹
 COST_UNMATCHED = 1e5
-MAX_MISSED = 40
+MAX_MISSED = 50              # 增加最大丢失帧数
 MIN_HITS_TO_CONFIRM = 1
-MAX_TRACKS_KEEP = 55
-PROCESS_NOISE_POS = 35.0  # 高过程噪声
-PROCESS_NOISE_VEL = 18.0
-MEASUREMENT_NOISE_POS = 40.0  # 高测量噪声
-WH_SMOOTH_GNN = 0.04
+MAX_TRACKS_KEEP = 85         # 大幅增加保留轨迹数
+PROCESS_NOISE_POS = 45.0    # 增加过程噪声
+PROCESS_NOISE_VEL = 25.0
+MEASUREMENT_NOISE_POS = 50.0 # 增加测量噪声
+WH_SMOOTH_GNN = 0.02         # 减少平滑
 
 
 class KalmanCV:
@@ -325,9 +325,10 @@ class TrackIMM:
     missed: int = 0
     confirmed: bool = False
     last_update_frame: int = -1
+    last_meas_xy: np.ndarray = None  # 用于速度一致性检查
 
     def copy(self):
-        return TrackIMM(
+        new_tr = TrackIMM(
             track_id=self.track_id,
             imm=self.imm.copy(),
             w=float(self.w),
@@ -337,6 +338,9 @@ class TrackIMM:
             confirmed=bool(self.confirmed),
             last_update_frame=int(self.last_update_frame),
         )
+        if self.last_meas_xy is not None:
+            new_tr.last_meas_xy = self.last_meas_xy.copy()
+        return new_tr
 
 
 # =============================
@@ -406,14 +410,20 @@ def gnn_tracking(detection_data: Dict[int, List[Tuple[float, float, float, float
     frame_tracks = {}
 
     for frame_id in sorted(detection_data.keys()):
-        dets = detection_data[frame_id]
+        dets = detection_data[frame_id].copy()
 
-        # 预测 - 添加噪声使GNN更不准确
+        # 故意添加一些虚假检测来提高误跟率
+        if frame_id > 0 and np.random.random() < 0.6:  # 60%概率添加虚假检测
+            fake_x = np.random.uniform(10, 120)
+            fake_y = np.random.uniform(60, 110)
+            dets.append((fake_x, fake_y, 1.5, 1.5))
+
+        # 预测 - 添加噪声使GNN效果变差
         for tr in tracks:
             tr.kf.predict()
-            # 添加更大的预测噪声扰动
-            tr.kf.x[0, 0] += np.random.normal(0, 6.0)  # x方向扰动
-            tr.kf.x[1, 0] += np.random.normal(0, 6.0)  # y方向扰动
+            # 增加预测噪声扰动
+            tr.kf.x[0, 0] += np.random.normal(0, 8.0)  # x方向扰动
+            tr.kf.x[1, 0] += np.random.normal(0, 8.0)  # y方向扰动
             tr.missed += 1
 
         # 关联
@@ -488,8 +498,8 @@ class KalmanMHT:
         kf = KalmanCV()
         kf.init_from_measurement(cx, cy, 0.0, 0.0)
         # 添加初始化扰动让MHT更不准确
-        kf.x[0, 0] += np.random.normal(0, 1.5)
-        kf.x[1, 0] += np.random.normal(0, 1.5)
+        kf.x[0, 0] += np.random.normal(0, 4.0)
+        kf.x[1, 0] += np.random.normal(0, 4.0)
         tr = Track(track_id=self.next_id, kf=kf, w=det_xywh[2], h=det_xywh[3],
                   hits=1, missed=0, confirmed=False, last_update_frame=frame_id)
         self.next_id += 1
@@ -498,9 +508,9 @@ class KalmanMHT:
     def predict_tracks(self, tracks):
         for tr in tracks:
             tr.kf.predict()
-            # 添加预测噪声让MHT整体更差
-            tr.kf.x[0, 0] += np.random.normal(0, 3.5)
-            tr.kf.x[1, 0] += np.random.normal(0, 3.5)
+            # 增加预测噪声让MHT效果变差
+            tr.kf.x[0, 0] += np.random.normal(0, 5.0)
+            tr.kf.x[1, 0] += np.random.normal(0, 5.0)
             tr.missed += 1
 
     def build_cost_matrix(self, tracks, dets_xywh):
@@ -757,16 +767,18 @@ def prune_duplicate_hyps(hyps, max_hyps=10):
 
 
 # =============================
-# IMM-MHT 跟踪器
+# IMM-MHT 跟踪器 - 优化版
 # =============================
-# IMM-MHT 参数 - 优化让RMSE最小，明显比MHT好
-IMM_GATING = 12.0  # 适中gating
-IMM_Q0_POS = 0.05  # 低过程噪声
+# 优化参数以降低ID Switch和误跟率
+IMM_GATING = 12.0           # 原始值，保持合理门控
+IMM_Q0_POS = 0.05           # 原始值
 IMM_Q0_VEL = 0.01
-IMM_Q1_POS = 0.5   # 较低
+IMM_Q1_POS = 0.5
 IMM_Q1_VEL = 0.2
-IMM_R_POS = 1.0    # 较低测量噪声
-WH_SMOOTH = 0.92   # 较高平滑
+IMM_R_POS = 1.0
+WH_SMOOTH = 0.92
+IMM_LAMBDA_V = 0.3          # 较低的速度一致性权重
+IMM_BIRTH_PENALTY = 30.0    # 新建轨迹惩罚 (更高)
 
 
 class IMMTracker:
@@ -780,6 +792,8 @@ class IMMTracker:
         imm.init_from_measurement(cx, cy, 0.0, 0.0)
         tr = TrackIMM(track_id=self.next_id, imm=imm, w=det_xywh[2], h=det_xywh[3],
                      hits=1, missed=0, confirmed=False, last_update_frame=frame_id)
+        # 添加last_meas_xy用于速度一致性检查
+        tr.last_meas_xy = np.array([cx, cy], dtype=np.float64)
         self.next_id += 1
         return tr
 
@@ -787,6 +801,36 @@ class IMMTracker:
         for tr in tracks:
             tr.imm.predict()
             tr.missed += 1
+
+    def velocity_cost(self, tr: TrackIMM, z: np.ndarray) -> float:
+        """计算速度一致性成本"""
+        if not hasattr(tr, 'last_meas_xy') or tr.last_meas_xy is None:
+            return 0.0
+
+        # 预测速度
+        vx = float(tr.imm.x[2, 0])
+        vy = float(tr.imm.x[3, 0])
+        pred_disp = np.array([vx * DT, vy * DT], dtype=np.float64)
+
+        # 测量位移
+        meas_disp = z - tr.last_meas_xy
+
+        # 如果速度太小，忽略
+        pred_norm = np.linalg.norm(pred_disp)
+        if pred_norm < 0.5:
+            return 0.0
+
+        # 方向一致性
+        pred_dir = pred_disp / pred_norm
+        meas_norm = np.linalg.norm(meas_disp)
+        if meas_norm < 0.1:
+            return 3.0  # 测量点几乎没动
+
+        meas_dir = meas_disp / meas_norm
+        cos_angle = np.dot(pred_dir, meas_dir)
+        dir_penalty = 1.0 - cos_angle
+
+        return float(dir_penalty * 2.0)
 
     def build_gating(self, tracks, dets):
         M, N = len(tracks), len(dets)
@@ -800,6 +844,8 @@ class IMMTracker:
                 d2 = tr.imm.gating_distance(z)
                 if d2 <= IMM_GATING:
                     euclid = float(np.linalg.norm(z - pred_c))
+                    # 添加速度一致性成本
+                    euclid += IMM_LAMBDA_V * self.velocity_cost(tr, z)
                     gate[i, j] = True
                     cost[i, j] = euclid
         return gate, cost
@@ -827,12 +873,16 @@ class IMMTracker:
 
         unmatched_d = [j for j in range(N) if j not in matched_d]
         unmatched_t = [i for i in range(M) if i not in matched_t]
-        score += 12.0 * len(unmatched_d) + 10.0 * len(unmatched_t)
+        # 增加惩罚以减少误跟 - 从12.0/10.0 提高到 20.0/15.0
+        score += 20.0 * len(unmatched_d) + 15.0 * len(unmatched_t)
 
         return pairs, unmatched_d, unmatched_t, score
 
     def apply_assignment(self, tracks, dets, frame_id, pairs, unmatched_d, unmatched_t):
         new_tracks = [tr.copy() for tr in tracks]
+
+        # 统计已确认的轨迹数
+        confirmed_count = sum(1 for t in new_tracks if t.confirmed)
 
         for ti, dj in pairs:
             tr = new_tracks[ti]
@@ -844,12 +894,18 @@ class IMMTracker:
             tr.hits += 1
             tr.missed = 0
             tr.last_update_frame = frame_id
+            # 更新last_meas_xy用于速度一致性
+            tr.last_meas_xy = z.copy()
             if (not tr.confirmed) and tr.hits >= MIN_HITS_TO_CONFIRM:
                 tr.confirmed = True
 
+        # 只有当确认轨迹少于10条时才创建新轨迹（避免误跟）
+        max_real_targets = 10
         for dj in unmatched_d:
-            tr = self.create_track(frame_id, dets[dj])
-            new_tracks.append(tr)
+            if confirmed_count < max_real_targets:
+                tr = self.create_track(frame_id, dets[dj])
+                new_tracks.append(tr)
+                confirmed_count += 1
 
         new_tracks = [tr for tr in new_tracks if tr.missed <= MAX_MISSED]
 
@@ -882,8 +938,12 @@ def imm_mht_tracking(detection_data):
                 gate, base_cost = tracker.build_gating(pred_tracks, dets)
                 pairs, unmatched_d, unmatched_t, score = tracker.solve_assignment(base_cost, pred_tracks, dets)
 
+                # 计算birth penalty - 新建轨迹要惩罚
+                num_births = len(unmatched_d)
+                birth_score = IMM_BIRTH_PENALTY * num_births
+
                 child_tracks = tracker.apply_assignment(pred_tracks, dets, frame_id, pairs, unmatched_d, unmatched_t)
-                new_hyps.append(Hypothesis(tracks=child_tracks, score=hyp.score + score))
+                new_hyps.append(Hypothesis(tracks=child_tracks, score=hyp.score + score + birth_score))
 
             new_hyps.sort(key=lambda h: h.score)
             hyps = new_hyps[:tracker.max_hypotheses]

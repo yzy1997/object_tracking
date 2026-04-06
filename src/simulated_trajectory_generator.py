@@ -23,10 +23,22 @@ DETECTION_JSON_PATH = os.path.join(OUTPUT_DIR, "detections.json")
 # 图像参数 - 雷达图像132x132
 IMG_W, IMG_H = 132, 132
 
-# 轨迹参数
+# 轨迹参数 - 1900m视角：轨迹集中在y=50-120范围
 NUM_TRAJECTORIES = 10
 POINTS_PER_TRAJECTORY_MIN = 25
 POINTS_PER_TRAJECTORY_MAX = 30
+Y_RANGE = (50, 120)  # 1900m视角的纵坐标范围
+
+# 俄罗斯方块形状库 (1-3像素)
+TETROMINO_SHAPES = [
+    [(0, 0)],                    # 单点 (1像素)
+    [(0, 0), (1, 0)],            # 水平2
+    [(0, 0), (0, 1)],            # 垂直2
+    [(0, 0), (1, 0), (0, 1)],    # L形3
+    [(0, 0), (1, 0), (1, 1)],    # 小方块3
+    [(0, 0), (1, 0), (2, 0)],    # 水平3
+    [(0, 0), (0, 1), (0, 2)],    # 垂直3
+]
 
 # =============================
 # 轨迹生成函数 - 从左到右、上下起伏
@@ -42,6 +54,7 @@ def generate_left_to_right_trajectory(
     """
     生成从左到右、上下起伏的无人机轨迹
     类似单光子雷达的稀疏点效果
+    1900m视角：轨迹集中在纵坐标50-120范围
     """
     points = []
     x = start_x
@@ -50,42 +63,47 @@ def generate_left_to_right_trajectory(
     # 随机相位偏移，使每条轨迹起伏不同步
     phase_offset = np.random.uniform(0, 2 * np.pi)
 
+    # 1900m视角的目标范围
+    y_min, y_max = Y_RANGE
+
     for i in range(num_points):
         points.append((x, y))
 
         # x方向匀速增加（从左到右）
         x += base_speed + np.random.uniform(-0.5, 0.5)
 
-        # y方向正弦波动（上下起伏）
-        y = start_y + wave_amplitude * np.sin(wave_freq * i + phase_offset)
-        y += np.random.uniform(-2.0, 2.0)  # 添加小幅度随机抖动
+        # y方向正弦波动（上下起伏），限制在50-120范围内
+        y_base = start_y + wave_amplitude * np.sin(wave_freq * i + phase_offset)
+        # 限制在目标范围内
+        y = np.clip(y_base + np.random.uniform(-2.0, 2.0), y_min + 5, y_max - 5)
 
         # 边界约束
         x = np.clip(x, 5, IMG_W - 5)
-        y = np.clip(y, 5, IMG_H - 5)
+        y = np.clip(y, y_min, y_max)
 
     return points
 
 
 def generate_all_trajectories() -> Dict[int, Dict]:
-    """生成所有无人机轨迹 - 从左到右飞行，有3-4条轨迹明显交叉"""
+    """生成所有无人机轨迹 - 从左到右飞行，有3-4条轨迹明显交叉
+    1900m视角：轨迹集中在纵坐标50-120范围"""
     np.random.seed(42)
 
     trajectories = {}
 
-    # 定义10条轨迹 - 分散但在中间区域有几条明显交叉
+    # 定义10条轨迹 - 分散在y=50-120范围内，有几条轨迹明显交叉
     start_configs = [
         # (start_x, start_y, wave_amplitude, wave_freq, base_speed)
-        (10, 10, 4, 0.15, 4.0),    # 底部1
-        (10, 25, 5, 0.18, 4.1),    # 底部2 - 与底部1接近
-        (10, 40, 3, 0.12, 4.2),   # 中下
-        (10, 55, 8, 0.22, 4.0),   # 中间1 - 交叉区域开始
-        (10, 70, 10, 0.25, 3.9),  # 中间2 - 与中间1,3,4交叉
-        (10, 85, 7, 0.20, 4.1),   # 中间3 - 与中间2,4交叉
+        (10, 55, 4, 0.15, 4.0),    # 底部1
+        (10, 62, 5, 0.18, 4.1),    # 底部2 - 与底部1接近
+        (10, 70, 3, 0.12, 4.2),   # 中下
+        (10, 78, 8, 0.22, 4.0),   # 中间1 - 交叉区域开始
+        (10, 85, 10, 0.25, 3.9),  # 中间2 - 与中间1,3,4交叉
+        (10, 92, 7, 0.20, 4.1),   # 中间3 - 与中间2,4交叉
         (10, 100, 6, 0.17, 4.2),  # 中间4 - 与中间2,3交叉
-        (10, 115, 5, 0.15, 4.0),  # 中上
-        (10, 125, 4, 0.13, 4.1),  # 顶部
-        (10, 60, 12, 0.28, 3.8),  # 中间5 - 与中间1-4都交叉
+        (10, 108, 5, 0.15, 4.0),  # 中上
+        (10, 115, 4, 0.13, 4.1),  # 顶部
+        (10, 82, 12, 0.28, 3.8),  # 中间5 - 与中间1-4都交叉
     ]
 
     for i in range(NUM_TRAJECTORIES):
@@ -110,8 +128,22 @@ def generate_all_trajectories() -> Dict[int, Dict]:
     return trajectories
 
 
+def get_random_tetromino() -> List[Tuple[int, int]]:
+    """随机选择一个俄罗斯方块形状 (1-3像素)"""
+    return TETROMINO_SHAPES[np.random.randint(0, len(TETROMINO_SHAPES))]
+
+
+def tetromino_to_bbox(shape: List[Tuple[int, int]]) -> Tuple[float, float]:
+    """将俄罗斯方块形状转换为bbox (w, h)"""
+    if not shape:
+        return (1.0, 1.0)
+    max_x = max(p[0] for p in shape) + 1
+    max_y = max(p[1] for p in shape) + 1
+    return (float(max_x), float(max_y))
+
+
 def save_gt_tracks(trajectories: Dict[int, Dict], output_path: str):
-    """保存为GT格式 (frame, gt_id, x, y, w, h)"""
+    """保存为GT格式 (frame, gt_id, x, y, w, h) - 使用俄罗斯方块形状"""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
@@ -121,8 +153,9 @@ def save_gt_tracks(trajectories: Dict[int, Dict], output_path: str):
         for track_id, data in trajectories.items():
             points = data["points"]
             for frame_idx, (x, y) in enumerate(points):
-                # 单光子雷达效果：1-2像素的稀疏点
-                w, h = 1.5, 1.5
+                # 俄罗斯方块形状 (1-3像素)
+                shape = get_random_tetromino()
+                w, h = tetromino_to_bbox(shape)
                 writer.writerow([frame_idx, track_id, f"{x:.2f}", f"{y:.2f}", f"{w:.2f}", f"{h:.2f}"])
 
     print(f"[GT] Saved to {output_path}")
@@ -131,7 +164,7 @@ def save_gt_tracks(trajectories: Dict[int, Dict], output_path: str):
 def save_detections(trajectories: Dict[int, Dict], output_path: str, noise_std: float = 1.0):
     """
     保存为检测格式 (frame -> list of detections)
-    添加测量噪声模拟真实检测（单光子雷达噪声）
+    添加测量噪声模拟真实检测，使用俄罗斯方块形状
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -149,9 +182,12 @@ def save_detections(trajectories: Dict[int, Dict], output_path: str, noise_std: 
                 # 添加测量噪声（单光子雷达噪声）
                 x_noisy = x + np.random.normal(0, noise_std)
                 y_noisy = y + np.random.normal(0, noise_std)
-                # 1-2像素大小的检测框
-                w = 1.5 + np.random.normal(0, 0.3)
-                h = 1.5 + np.random.normal(0, 0.3)
+                # 俄罗斯方块形状 (1-3像素)
+                shape = get_random_tetromino()
+                w_orig, h_orig = tetromino_to_bbox(shape)
+                # 添加小幅噪声
+                w = w_orig + np.random.normal(0, 0.3)
+                h = h_orig + np.random.normal(0, 0.3)
                 w, h = max(1.0, w), max(1.0, h)
                 frame_dets.append({
                     "track_id": track_id,
@@ -160,7 +196,8 @@ def save_detections(trajectories: Dict[int, Dict], output_path: str, noise_std: 
                     "w": float(w),
                     "h": float(h),
                     "true_x": float(x),
-                    "true_y": float(y)
+                    "true_y": float(y),
+                    "shape": shape
                 })
         detections[frame_idx] = frame_dets
 
@@ -172,7 +209,7 @@ def save_detections(trajectories: Dict[int, Dict], output_path: str, noise_std: 
 
 
 def visualize_trajectories(trajectories: Dict[int, Dict], output_path: str, bg_image_path: str = None):
-    """可视化生成的轨迹 - 黄色单光子点，带背景图"""
+    """可视化生成的轨迹 - 黄色单光子点，俄罗斯方块形状，带背景图"""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     fig, ax = plt.subplots(1, 1, figsize=(8, 8))
@@ -185,17 +222,25 @@ def visualize_trajectories(trajectories: Dict[int, Dict], output_path: str, bg_i
     else:
         ax.set_facecolor("#0d0d1a")
 
-    # 黄色单光子点效果 - 只显示点，不连线
+    # 俄罗斯方块效果 - 只显示点，不连线
     for track_id, data in trajectories.items():
         points = data["points"]
-        xs = [p[0] for p in points]
-        ys = [p[1] for p in points]
 
-        # 只绘制单个光子点（黄色亮点）- 不画连线
-        ax.scatter(xs, ys, c='yellow', s=15, marker='o',
-                  edgecolors='none', zorder=5, alpha=0.9)
+        for x, y in points:
+            # 随机选择俄罗斯方块形状
+            shape = get_random_tetromino()
+            color = 'yellow'
+
+            # 绘制俄罗斯方块形状的每个像素点
+            for dx, dy in shape:
+                px = x + dx * 0.4  # 缩小一点以显示组合效果
+                py = y + dy * 0.4
+                ax.scatter(px, py, c=color, s=20, marker='s',
+                          edgecolors='none', zorder=5, alpha=0.9)
 
         # 起点和终点标记
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
         ax.scatter([xs[0]], [ys[0]], c='lime', s=40, marker='o',
                    edgecolors='white', linewidths=0.5, zorder=6)
         ax.scatter([xs[-1]], [ys[-1]], c='red', s=40, marker='s',
@@ -205,7 +250,7 @@ def visualize_trajectories(trajectories: Dict[int, Dict], output_path: str, bg_i
     ax.set_ylim(0, IMG_H)
     ax.set_xlabel("X (pixel)", fontsize=12)
     ax.set_ylabel("Y (pixel)", fontsize=12)
-    ax.set_title(f"1900m UAV Trajectories (10 tracks, 25-30 frames)\nLeft-to-Right with Wave Motion", fontsize=12)
+    ax.set_title(f"1900m UAV Trajectories (10 tracks, 25-30 frames)\nLeft-to-Right with Wave Motion, Y-Range: 50-120", fontsize=12)
     ax.set_aspect('equal')
     ax.set_facecolor('#1a1a2e')
     ax.grid(True, alpha=0.3, linestyle='--', color='white')

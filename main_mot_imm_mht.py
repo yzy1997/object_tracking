@@ -39,39 +39,39 @@ DETECTOR_MIN_Y = 0
 
 
 # -----------------------------
-# IMM-MHT 参数（你可以先用这套）
+# IMM-MHT 参数（优化版 - 降低ID Switch和误跟率）
 # -----------------------------
 DT = 1.0
-MAX_MISSED = 10
-MIN_HITS_TO_CONFIRM = 2
+MAX_MISSED = 6              # 更严格：减少最大丢失帧数
+MIN_HITS_TO_CONFIRM = 3     # 增加确认所需命中次数
 
-# 统计门控：2D 卡方 99%
-GATING_CHI2 = 9.21
+# 统计门控：2D 卡方 95% (更严格，减少误跟)
+GATING_CHI2 = 4.0           # 更严格的门控
 
 # 假设剪枝
-MAX_HYPOTHESES = 20
-N_SCAN = 3
+MAX_HYPOTHESES = 30         # 增加假设数量
+N_SCAN = 5                  # 增加N-scan深度
 
 # 4 UAV 先验（避免轨迹爆炸）
 MAX_CONFIRMED = 4
 MAX_TRACKS_KEEP = 10
 
-# 打分（越大越不爱 birth，越大越不爱 miss）
-MISS_PENALTY = 6.0
-BIRTH_PENALTY = 12.0
+# 打分（优化：大幅增加惩罚减少虚假轨迹）
+MISS_PENALTY = 10.0         # 更高惩罚
+BIRTH_PENALTY = 20.0        # 更高出生惩罚
 
-# cost 中速度/尺寸权重
-LAMBDA_V = 0.35
-LAMBDA_WH = 0.05
+# cost 中速度/尺寸权重（增加速度一致性权重减少ID切换）
+LAMBDA_V = 0.8              # 更高的速度一致性权重
+LAMBDA_WH = 0.1             # 增加尺寸一致性权重
 
-# KF 测量噪声（跟你原来一致即可）
-R_POS = 6.0
+# KF 测量噪声（降低，更信任测量）
+R_POS = 4.0                 # 更信任测量值
 
-# IMM 两个模型的过程噪声（平滑 vs 灵活）
-IMM_Q0 = (0.6, 0.15)
-IMM_Q1 = (2.0, 0.9)
+# IMM 两个模型的过程噪声（更平滑）
+IMM_Q0 = (0.3, 0.08)
+IMM_Q1 = (1.0, 0.5)
 
-WH_SMOOTH = 0.7
+WH_SMOOTH = 0.8             # 更高的尺寸平滑
 
 
 # -----------------------------

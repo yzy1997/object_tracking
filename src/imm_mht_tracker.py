@@ -68,11 +68,11 @@ class IMMFilter:
     def __init__(
         self,
         dt=1.0,
-        r_pos=6.0,
-        q0=(0.6, 0.15),   # (q_pos, q_vel) smooth
-        q1=(2.0, 0.9),    # (q_pos, q_vel) agile
-        trans_mat=None,   # model transition
-        mu0=None          # initial mode prob
+        r_pos=5.0,
+        q0=(0.4, 0.1),   # (q_pos, q_vel) smooth - 更平滑
+        q1=(1.5, 0.7),  # (q_pos, q_vel) agile - 降低灵活度
+        trans_mat=None,  # model transition
+        mu0=None         # initial mode prob
     ):
         self.dt = float(dt)
         self.models = [
@@ -81,15 +81,16 @@ class IMMFilter:
         ]
         self.M = 2
 
+        # 更高的自转移概率，保持模型稳定
         if trans_mat is None:
-            # prefer staying in same model
-            self.PI = np.array([[0.92, 0.08],
-                                [0.08, 0.92]], dtype=np.float32)
+            self.PI = np.array([[0.95, 0.05],
+                                [0.05, 0.95]], dtype=np.float32)
         else:
             self.PI = np.array(trans_mat, dtype=np.float32)
 
         if mu0 is None:
-            self.mu = np.array([0.5, 0.5], dtype=np.float32)
+            # 初始偏向平滑模型
+            self.mu = np.array([0.7, 0.3], dtype=np.float32)
         else:
             self.mu = np.array(mu0, dtype=np.float32)
 
@@ -205,6 +206,9 @@ class IMMTrack:
     # for velocity consistency (optional)
     last_meas_xy: Optional[np.ndarray] = None
 
+    # for direction consistency - 记录历史方向
+    direction_history: Tuple[float, ...] = ()  # 存储最近的方向角
+
 
 @dataclass
 class Hypothesis:
@@ -230,21 +234,21 @@ class IMMMHTTracker:
     def __init__(
         self,
         dt=1.0,
-        gating_chi2=9.21,      # 2D chi-square 99% ~ 9.21
-        max_hypotheses=20,
-        n_scan=3,
-        max_missed=10,
-        min_hits_to_confirm=2,
+        gating_chi2=4.0,       # 2D chi-square 90% (更严格，减少误跟)
+        max_hypotheses=30,    # 增加假设数量
+        n_scan=5,             # 增加N-scan深度
+        max_missed=6,         # 更严格：减少最大丢失帧数
+        min_hits_to_confirm=3,# 增加确认所需命中次数
         max_confirmed=4,
         max_tracks_keep=10,
-        miss_penalty=6.0,
-        birth_penalty=12.0,
-        lambda_v=0.35,
-        lambda_wh=0.05,
-        r_pos=6.0,
-        imm_q0=(0.6, 0.15),
-        imm_q1=(2.0, 0.9),
-        wh_smooth=0.7,
+        miss_penalty=10.0,    # 更高惩罚
+        birth_penalty=20.0,   # 更高出生惩罚
+        lambda_v=0.8,         # 更高的速度一致性权重
+        lambda_wh=0.1,        # 增加尺寸一致性权重
+        r_pos=4.0,            # 更信任测量值
+        imm_q0=(0.3, 0.08),   # 更平滑
+        imm_q1=(1.0, 0.5),    # 降低灵活度
+        wh_smooth=0.8,        # 更高的尺寸平滑
     ):
         self.dt = float(dt)
         self.gating_chi2 = float(gating_chi2)
@@ -311,7 +315,31 @@ class IMMMHTTracker:
         vy = float(tr.imm.x[3, 0])
         pred_disp = np.array([vx * self.dt, vy * self.dt], dtype=np.float32)
         meas_disp = (z_xy.astype(np.float32) - tr.last_meas_xy.astype(np.float32))
-        return float(np.linalg.norm(meas_disp - pred_disp))
+
+        # 如果速度太小，忽略方向检查
+        pred_norm = np.linalg.norm(pred_disp)
+        if pred_norm < 0.5:
+            return 0.0
+
+        # 方向一致性：计算角度差
+        pred_dir = pred_disp / pred_norm
+        meas_norm = np.linalg.norm(meas_disp)
+        if meas_norm < 0.1:
+            return 5.0  # 测量点几乎没动，惩罚
+
+        meas_dir = meas_disp / meas_norm
+
+        # 方向夹角余弦值（-1到1），1表示同方向
+        cos_angle = np.dot(pred_dir, meas_dir)
+        # 转换为一个惩罚值：方向越一致惩罚越小
+        # cos_angle=1时惩罚为0，cos_angle=-1时惩罚为2
+        dir_penalty = 1.0 - cos_angle
+
+        # 同时检查速度大小一致性
+        speed_ratio = meas_norm / max(pred_norm, 0.1)
+        speed_penalty = abs(speed_ratio - 1.0)
+
+        return float(dir_penalty * 2.0 + speed_penalty * 0.5)
 
     def _size_cost(self, tr: IMMTrack, det_xywh) -> float:
         _, _, w, h = det_xywh
@@ -361,6 +389,15 @@ class IMMMHTTracker:
             tr.total_predictions += 1
 
     def _update_track(self, tr: IMMTrack, frame_id: int, det_xywh, z_xy: np.ndarray):
+        # 记录方向用于一致性检查
+        if tr.last_meas_xy is not None:
+            disp = z_xy - tr.last_meas_xy
+            if np.linalg.norm(disp) > 0.5:
+                # 计算方向角（弧度）
+                direction = np.arctan2(float(disp[1]), float(disp[0]))
+                # 保留最近5帧方向
+                tr.direction_history = (tr.direction_history + (direction,))[-5:]
+
         tr.imm.update(z_xy)
         tr.missed = 0
         tr.hits += 1
